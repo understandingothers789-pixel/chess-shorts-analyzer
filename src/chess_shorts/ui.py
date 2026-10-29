@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 
 from PIL import Image
+from importlib.metadata import PackageNotFoundError, version
 from PySide6.QtCore import QSettings, QSize, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QDesktopServices, QIcon, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
@@ -49,6 +50,11 @@ QProgressBar { border:0; background:#252e40; border-radius:4px; text-align:cente
 QProgressBar::chunk { background:#81e4b1; border-radius:4px; }
 QToolTip { color:#fff; background:#283347; border:1px solid #52627a; }
 '''
+
+try:
+    APP_VERSION = version('chess-shorts-analyzer')
+except PackageNotFoundError:
+    APP_VERSION = '0.1.0'
 
 
 class Worker(QThread):
@@ -125,7 +131,7 @@ def group(title):
 class Studio(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('Chess Shorts · Visual Analysis Studio')
+        self.setWindowTitle(f'Chess Shorts · Visual Analysis Studio · v{APP_VERSION}')
         self.resize(1500, 960)
         self.setMinimumSize(1080, 720)
         self.setStyleSheet(STYLE)
