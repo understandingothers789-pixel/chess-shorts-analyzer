@@ -3,7 +3,7 @@ Set-Location (Split-Path $PSScriptRoot -Parent)
 if (-not (Test-Path '.venv\Scripts\python.exe')) { throw 'Run install_windows.ps1 first.' }
 & '.\.venv\Scripts\python.exe' -m pip install -e '.[package]'
 if ($LASTEXITCODE -ne 0) { throw 'Packaging dependency installation failed.' }
-& '.\.venv\Scripts\python.exe' -m PyInstaller --noconfirm --clean --windowed --onedir --name ChessShortsStudio --paths src --collect-all playwright scripts/desktop_entry.py
+& '.\.venv\Scripts\python.exe' -m PyInstaller --noconfirm --clean --windowed --onedir --name ChessShortsStudio --paths src --icon src/chess_shorts/assets/app.ico --collect-data chess_shorts --collect-all playwright scripts/desktop_entry.py
 if ($LASTEXITCODE -ne 0) { throw 'PyInstaller build failed.' }
 Copy-Item README.md dist/ChessShortsStudio/README.md
 Copy-Item docs/limitations.md dist/ChessShortsStudio/LIMITATIONS.md

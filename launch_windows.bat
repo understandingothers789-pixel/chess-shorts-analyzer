@@ -5,5 +5,4 @@ if not exist ".venv\Scripts\python.exe" (
     pause
     exit /b 1
 )
-".venv\Scripts\python.exe" -m chess_shorts
-if errorlevel 1 pause
+start "" ".venv\Scripts\pythonw.exe" -m chess_shorts
