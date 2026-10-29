@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 import time
 from pathlib import Path
@@ -67,6 +68,7 @@ class Worker(QThread):
         except Cancelled:
             self.result.emit(None)
         except Exception as exc:
+            logging.exception('Background task failed')
             self.failed.emit(str(exc))
 
 
@@ -328,6 +330,8 @@ class Studio(QMainWindow):
         self.gallery.setIconSize(QSize(90, 90))
         self.gallery.currentRowChanged.connect(self.select_frame)
         right_frames.addWidget(self.gallery, 1)
+        right_frames.addWidget(button('Refresh frames', self.refresh_frames))
+        right_frames.addWidget(button('Delete current capture…', self.delete_current_capture))
         self.duplicates_button = button('Review exact duplicates…', self.review_duplicates)
         right_frames.addWidget(self.duplicates_button)
         self.right_tabs.addTab(frame_library, 'Frames')
@@ -362,6 +366,7 @@ class Studio(QMainWindow):
         self.reveal_export_button = button("Show exported ZIP", self.reveal_export)
         self.reveal_export_button.setEnabled(False)
         folders.addWidget(button("Check setup", self.check_setup))
+        folders.addWidget(button('Open logs', lambda: self.open_folder(Path.home() / 'ChessShorts' / 'logs')))
         folders.addWidget(self.reveal_export_button)
         folders.addStretch()
         folders.addWidget(self.folder_button)
@@ -459,6 +464,7 @@ class Studio(QMainWindow):
         self.status_label.setText(f'Export ready · {path}')
 
     def error(self, message):
+        logging.error('%s', message)
         self.status_label.setText('Needs attention · ' + message.splitlines()[0])
         QMessageBox.warning(self, 'Capture needs attention', message)
 
@@ -676,6 +682,7 @@ class Studio(QMainWindow):
                                      window.title if index == 1 else str(Path(source).resolve()) if index == 0 else source,
                                      parent=parent)
             self.pending_session = session
+            logging.info('Capture started: %s (%s)', session.root, session.data['method'])
             crop = self.crop_preview.crop
             fallback = self.fallback.isChecked()
             self.save_settings()
@@ -723,11 +730,13 @@ class Studio(QMainWindow):
 
     def capture_done(self, session):
         if session:
+            logging.info('Capture finished: %s; status=%s; frames=%s', session.root, session.data['status'], len(session.data['frames']))
             self.show_session(session)
             self.status_label.setText(f'{session.data["status"].title()} · {len(session.data["frames"])} frames · {len(session.data["contact_sheets"])} contact sheets')
 
     def stop_capture(self):
         if self.job:
+            logging.info('Stop requested')
             self.job.control.stop()
             self.status_label.setText('Stopping · preserving completed frames…')
             self.stop_button.setEnabled(False)
@@ -826,6 +835,9 @@ class Studio(QMainWindow):
         frame = self.session.data['frames'][index]
         self.frame_label.setText(f'{frame_label(frame)}   ·   {frame["width"]} × {frame["height"]} original pixels')
         path = contained(self.session.root, frame['file'])
+        if not path.is_file():
+            self.refresh_frames()
+            return
         def task(_control, _progress):
             with Image.open(path) as image:
                 return token, qimage(image)
@@ -990,13 +1002,59 @@ class Studio(QMainWindow):
         except (OSError, ValueError) as exc:
             self.error(str(exc))
 
-    def delete_session(self):
+    def refresh_frames(self):
+        if self.busy or not self.session:
+            return
+        session = self.session
+        if not session.root.is_dir():
+            self.clear_current_session()
+            self.refresh_library()
+            self.status_label.setText('The capture folder was removed. The frame list has been cleared.')
+            return
+        remaining = [frame for frame in session.data['frames'] if contained(session.root, frame['file']).is_file()]
+        removed = len(session.data['frames']) - len(remaining)
+        if removed:
+            session.data['frames'] = remaining
+            for number, frame in enumerate(remaining, 1):
+                frame['number'] = number
+            try:
+                session.save()
+            except OSError as exc:
+                self.error(f'Could not update session metadata: {exc}')
+            logging.info('Removed %s missing frames from %s', removed, session.root)
+        self.show_session(session)
+        self.status_label.setText(f'Frames refreshed · {removed} missing frames removed from the list')
+
+    def clear_current_session(self):
+        for worker in self.thumbnail_jobs:
+            worker.requestInterruption()
+        self.session = None
+        self.token += 1
+        self.preview_token += 1
+        self.comparison_token += 1
+        self.gallery.clear()
+        for view in (self.viewer, self.compare_left, self.compare_right, self.live_view):
+            view.scene().clear()
+            view._item = None
+        self.frame_label.setText('No captured frames in this session.')
+        self.info.setText('No active session')
+        self.pinned = None
+        self.last_export = None
+        self.reveal_export_button.setEnabled(False)
+
+    def delete_current_capture(self):
+        if self.session:
+            self.delete_session(self.session.root)
+
+    def delete_session(self, selected_path=None):
         if self.busy:
             return
-        item = self.library.currentItem()
-        if not item:
-            return
-        path = Path(item.data(Qt.ItemDataRole.UserRole)).resolve()
+        if selected_path is None or isinstance(selected_path, bool):
+            item = self.library.currentItem()
+            if not item:
+                return
+            selected_path = item.data(Qt.ItemDataRole.UserRole)
+        path = Path(selected_path).resolve()
         library = Path(self.output.text()).expanduser().resolve()
         if path == library or not path.is_relative_to(library):
             self.error('Only sessions inside the current library can be deleted here.')
@@ -1012,15 +1070,9 @@ class Studio(QMainWindow):
                     worker.wait()
                 for worker in self.jobs:
                     worker.wait()
-                self.session = None
-                self.token += 1
-                self.preview_token += 1
-                self.gallery.clear()
-                self.viewer.scene().clear()
-                self.viewer._item = None
-                self.info.setText('No active session')
-                self.pinned = None
+                self.clear_current_session()
             shutil.rmtree(path)
+            logging.info('Deleted capture: %s', path)
             self.refresh_library()
         except OSError as exc:
             self.error(str(exc))
