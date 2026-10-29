@@ -126,3 +126,30 @@ class DesktopIntegration(unittest.TestCase):
                         studio.stop_capture()
                         self.wait_for(lambda: not studio.busy)
                     studio.close()
+
+    def test_invalid_saved_source_and_corrupt_library_are_recoverable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            settings = QSettings(str(root / 'settings.ini'), QSettings.Format.IniFormat)
+            settings.setValue('method', 99)
+            bad_session = root / 'library' / 'bad'
+            bad_session.mkdir(parents=True)
+            (bad_session / 'metadata.json').write_text('[]')
+            with patch('chess_shorts.ui.QSettings', return_value=settings):
+                studio = Studio()
+                try:
+                    self.assertEqual(studio.method.currentIndex(), 0)
+                    studio.output.setText(str(root / 'library'))
+                    studio.refresh_library()
+                    self.assertEqual(studio.library.count(), 0)
+                    def task(control, _progress):
+                        while not control.stopped:
+                            time.sleep(.01)
+                        control.checkpoint()
+                    studio.run_job(task, lambda _result: None)
+                    studio.stop_capture()
+                    self.wait_for(lambda: not studio.busy)
+                    self.assertFalse(studio.status_label.text().startswith('Stopping'))
+                    self.assertTrue(studio.start_button.isEnabled())
+                finally:
+                    studio.close()

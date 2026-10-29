@@ -154,6 +154,8 @@ class Studio(QMainWindow):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.tick)
         self.timer.start(200)
+        if self.method.currentIndex() == 1:
+            QTimer.singleShot(0, self.refresh_windows)
 
     def build(self):
         root = QWidget()
@@ -405,7 +407,7 @@ class Studio(QMainWindow):
 
     def preview_ready(self, result):
         generation, image = result
-        if generation == self.crop_generation:
+        if generation == self.crop_generation and not self.busy and not self.closing:
             self.crop_preview.set_image(image)
             self.crop_ready = True
             self.status_label.setText('Preview ready · drag to crop, or capture the whole window')
@@ -421,7 +423,7 @@ class Studio(QMainWindow):
                 self.inspected_video = (path, info)
                 self.update_estimate()
                 self.status_label.setText(f"Video inspected · {info['width']} × {info['height']} · {info['duration']:.3f} seconds")
-        self.run_job(lambda _c, _p: probe(Path(path)), ready)
+        self.run_job(lambda control, _p: probe(Path(path), control), ready)
 
     def update_estimate(self, *_args):
         duration, width, height = 30., None, None
@@ -620,6 +622,8 @@ class Studio(QMainWindow):
 
     def job_finished(self):
         worker = self.job
+        if self.status_label.text().startswith('Stopping'):
+            self.status_label.setText('Task finished · completed files are preserved')
         self.job = None
         self.busy = False
         self.pending_session = None
@@ -687,9 +691,12 @@ class Studio(QMainWindow):
                     progress(done, total)
                     now = time.monotonic()
                     if session.data['frames'] and now - last_preview >= .5:
-                        with Image.open(session.root / session.data['frames'][-1]['file']) as image:
-                            image.thumbnail((1000, 1000), Image.Resampling.LANCZOS)
-                            emit_frame(qimage(image))
+                        try:
+                            with Image.open(session.root / session.data['frames'][-1]['file']) as image:
+                                image.thumbnail((1000, 1000), Image.Resampling.LANCZOS)
+                                emit_frame(qimage(image))
+                        except (OSError, ValueError):
+                            pass  # A preview failure must not abort acquisition.
                         last_preview = now
                 try:
                     if index == 0:
@@ -932,6 +939,8 @@ class Studio(QMainWindow):
             for metadata in list_sessions(Path(self.output.text()).expanduser()):
                 try:
                     data = json.loads(metadata.read_text(encoding='utf-8'))
+                    if not isinstance(data, dict):
+                        continue
                     title = data.get('name', metadata.parent.name)
                     item = QListWidgetItem(f'{title}\n{data.get("screenshot_count", 0)} frames · {data.get("method", "unknown")} · {data.get("status", "unknown")}')
                     item.setData(Qt.ItemDataRole.UserRole, str(metadata.parent))
@@ -1053,7 +1062,10 @@ class Studio(QMainWindow):
             try:
                 widget.blockSignals(True)
                 if isinstance(widget, QLineEdit): widget.setText(str(value))
-                elif isinstance(widget, QComboBox): widget.setCurrentIndex(int(value))
+                elif isinstance(widget, QComboBox):
+                    index = int(value)
+                    if 0 <= index < widget.count():
+                        widget.setCurrentIndex(index)
                 elif isinstance(widget, QCheckBox): widget.setChecked(str(value).lower() == 'true')
                 elif isinstance(widget, QSpinBox): widget.setValue(int(value))
                 else: widget.setValue(float(value))

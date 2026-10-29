@@ -90,7 +90,11 @@ class Session:
                 v = frame.get(key)
                 if v is not None and (not isinstance(v, (int, float)) or not math.isfinite(v) or v < 0):
                     raise ValueError("Invalid frame timestamp.")
-        for sheet in data.get("contact_sheets", []):
+        if not isinstance(data.get('contact_sheets'), list):
+            raise ValueError('Invalid contact sheet metadata.')
+        if not isinstance(data.get('errors'), list) or not isinstance(data.get('interruptions'), list):
+            raise ValueError('Invalid session history.')
+        for sheet in data['contact_sheets']:
             contained(root, sheet)
         return cls(root, data)
 

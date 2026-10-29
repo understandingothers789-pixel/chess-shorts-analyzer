@@ -43,3 +43,9 @@ Five improvements were implemented: setup diagnostics/preflight tool checks, las
 The expanded suite covers real local-video inspection through the UI and a complete simulated-browser UI workflow: crop guard → preview/crop → capture → live preview → pause/resume → stop → automatic sheets → ZIP export and folder opening. The Win32 backend itself is still untested on this Linux host. The real Chromium integration continues to use local synthetic video rather than a live YouTube page.
 
 The final follow-up command is the full `RUN_BROWSER_TESTS=1` command documented above. Its current count is 21 tests; the earlier 17-test report is the original baseline, not the expanded test count.
+
+## Bug audit after Windows user feedback
+
+The latest full run executed **25 tests, all passed, no skips** (11.489 seconds), including real Chromium capture of synthetic local footage and offscreen Qt workflows. Added regression coverage for per-frame output width with mixed image dimensions, excess grid columns, malformed session collections, corrupt library entries, invalid saved source selection, and cancellation restoring ready controls/status.
+
+Fixes also reload browser windows when restoring Browser window mode, prevent late previews from replacing status during capture, pass cancellation through video inspection, and prevent a preview-image read failure from aborting frame acquisition. This does not establish native Win32/Brave or packaged executable readiness; the Windows checks above still apply.

@@ -83,7 +83,7 @@ def generate(session: Session, config: SheetConfig | None = None, progress=None,
     label_h = config.timestamp_size + 18
     cell_h = image_h + label_h
     gap = config.spacing
-    columns = min(config.columns, len(frames))
+    columns = min(config.columns, config.frames_per_sheet, len(frames))
     while columns > 1 and columns * (cell_w + gap) + gap > config.max_dimension:
         columns -= 1
     width = columns * (cell_w + gap) + gap
@@ -107,7 +107,7 @@ def generate(session: Session, config: SheetConfig | None = None, progress=None,
                     x, y = gap + (at % columns) * (cell_w + gap), gap + (at // columns) * (cell_h + gap)
                     with Image.open(contained(session.root, f["file"])) as im:
                         im = im.convert("RGB")
-                        im.thumbnail((cell_w, image_h), Image.Resampling.LANCZOS)
+                        im.thumbnail((widths[offset + at], heights[offset + at]), Image.Resampling.LANCZOS)
                         canvas.paste(im, (x + (cell_w - im.width) // 2, y + (image_h - im.height) // 2))
                     draw.text((x + 4, y + image_h + 6), frame_label(f), font=text_font, fill="#dce5f4")
                 suffix = "png" if config.format == "PNG" else "jpg"
