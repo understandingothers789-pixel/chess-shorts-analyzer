@@ -6,22 +6,12 @@ A local-first Windows 11 desktop app for capturing and inspecting video frames, 
 
 ## Install on Windows 11
 
-1. Install **64-bit Python 3.12+**, including the Python launcher.
-2. Install **FFmpeg and ffprobe**, and make both available on PATH. One option is `winget install --id Gyan.FFmpeg --exact`. Restart your terminal afterward. Verify with `ffmpeg -version` and `ffprobe -version`.
-3. Open PowerShell in this repository and run:
+1. Install **64-bit Python 3.12+** from [python.org](https://www.python.org/downloads/), including the Python launcher.
+2. Download and extract this repository, then double-click **install_windows.bat**. Wait for “Setup complete”. It installs the app into its own folder and does not change PowerShell settings.
+3. Double-click **launch_windows.bat** to open the app.
+4. To import local videos, install **FFmpeg and ffprobe** and make both available on PATH. One option is `winget install --id Gyan.FFmpeg --exact` in Command Prompt. Reopen the app after installation. You can use **Check setup** in the app to see whether they are available.
 
-   ```powershell
-   .\install_windows.ps1
-   ```
-
-   If your personal PowerShell policy blocks the script, review it first and use `powershell -ExecutionPolicy Bypass -File .\install_windows.ps1` for that invocation. No administrator rights are needed for the Python virtual environment.
-4. Double-click **launch_windows.bat**, or run:
-
-   ```powershell
-   .\.venv\Scripts\python.exe -m chess_shorts
-   ```
-
-Optional YouTube automation needs Chromium. Install it with `install_windows.ps1 -WithBrowser` or `.\.venv\Scripts\python.exe -m playwright install chromium`. Native Brave capture and local import do not need Chromium or Internet access.
+For optional YouTube URL automation, open Command Prompt in the app folder and run `.venv\Scripts\python.exe -m playwright install chromium`. Brave window capture and local import do not require Chromium. If your computer is managed by an organization, its security rules may restrict installers or downloads; follow your administrator’s guidance.
 
 ## Everyday Brave workflow
 
