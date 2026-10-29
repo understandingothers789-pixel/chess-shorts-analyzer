@@ -62,7 +62,7 @@ class CropPreview(QLabel):
         self.origin = None
         self.setMinimumSize(260, 240)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setText('Select a browser, then refresh preview.\nDrag over the video to choose a crop.')
+        self.setText('Select a browser window to see its preview.\nOptional: drag to select just the video.')
         self.setStyleSheet('background:#10131b; color:#9aa9bd; border:1px solid #30394b; border-radius:8px;')
 
     def set_image(self, image):

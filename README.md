@@ -16,8 +16,8 @@ For optional YouTube URL automation, open Command Prompt in the app folder and r
 ## Everyday Brave workflow
 
 1. Open a Short in Brave, Chrome, or Edge. Keep the browser restored and the video visible.
-2. In the app, select **Browser window**, click **Refresh browser windows**, and select your browser window.
-3. Click **Refresh capture preview** and drag a rectangle around just the video. Check the preview before starting.
+2. In the app, select **Browser window**, select your browser window. The preview loads automatically; use **Refresh browser windows** if needed.
+3. Optionally drag a rectangle around the video in the preview. Without a crop the app captures the whole browser window.
 4. Choose an interval (default **0.5 seconds**). Click **Start Capture**. During the three-second countdown, switch to Brave and play the video.
 5. Click **Stop** when finished. Completed frames are preserved and contact sheets are generated automatically. Pause/Resume pauses collection, not browser playback.
 6. Click **Export for ChatGPT**. Upload the PNG sheets individually using **Open Contact Sheets Folder**, or use the ZIP if your analysis workflow supports it.
@@ -84,5 +84,5 @@ The Windows GitHub Actions workflow runs core, browser, and offscreen desktop te
 - **Check setup** reports FFmpeg/ffprobe availability and whether optional Chromium is listed in Playwright's browser cache. Native window capture is Windows-only. Packaged builds refer you to the browser installation instructions instead of trying to launch a Python CLI.
 - **Inspect video / estimate** reads the selected local video's duration and dimensions. Requested frame count, minimum sheet count, and approximate uncompressed image size update when you change the interval, range, or frames per sheet. These are estimates: VFR sampling, PNG/JPEG compression, layout splitting, and sheet spacing affect actual results. Before inspecting, a clearly labeled 30-second example is shown.
 - **Last captured frame** displays a reduced preview of the latest saved image while capture runs (updated at most twice per second). It is a visual check, not a real-time playback monitor.
-- Browser capture requires a fresh preview and an explicitly drawn crop. Changing the selected window or fallback mode clears the crop to prevent using a region from a different source. A delayed preview from an older selection is discarded.
+- Browser capture previews the selected window automatically. Drag a crop if you want only part of the window; otherwise it captures the entire window. Changing windows clears the crop. A delayed preview from an older selection is discarded.
 - **Show exported ZIP** reveals the ZIP in Windows Explorer after export, or opens its containing folder on other platforms. It also works when reopening a session with an existing export.

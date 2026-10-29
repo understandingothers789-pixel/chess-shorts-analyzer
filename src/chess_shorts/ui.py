@@ -379,13 +379,18 @@ class Studio(QMainWindow):
             action.setShortcut(QKeySequence(key))
             action.triggered.connect(lambda checked=False, d=delta: self.navigate(d))
             self.addAction(action)
-        self.windows.currentIndexChanged.connect(self.invalidate_crop)
+        self.windows.currentIndexChanged.connect(self.window_selected)
         self.fallback.toggled.connect(self.invalidate_crop)
         self.crop_preview.changed.connect(self.mark_crop)
         self.source.textChanged.connect(self.update_estimate)
         for widget in (self.start, self.end, self.per_sheet):
             widget.valueChanged.connect(self.update_estimate)
         self.method_changed()
+
+    def window_selected(self, *_args):
+        self.invalidate_crop()
+        if self.method.currentIndex() == 1 and self.windows.currentData():
+            QTimer.singleShot(0, self.window_preview)
 
     def invalidate_crop(self, *_args):
         self.crop_generation += 1
@@ -403,10 +408,11 @@ class Studio(QMainWindow):
         if generation == self.crop_generation:
             self.crop_preview.set_image(image)
             self.crop_ready = True
+            self.status_label.setText('Preview ready · drag to crop, or capture the whole window')
 
     def check_setup(self):
         self.run_job(lambda _c, _p: diagnostics(),
-                     lambda text: QMessageBox.information(self, 'Setup diagnostics', text))
+                     lambda text: self.status_label.setText('Setup · ' + text.replace('\n', '  |  ')))
 
     def inspect_video(self):
         path = self.source.text().strip()
@@ -494,11 +500,12 @@ class Studio(QMainWindow):
         self.source.setPlaceholderText('Paste a YouTube video or Shorts URL…' if index == 2 else 'Choose a video file…')
         self.source_hint.setText([
             'Original pixels and real media timestamps. FFmpeg extracts without playback.',
-            'Refresh preview, drag a crop, then start and play the video. Keep the browser restored. Elapsed time is not video time. End is an optional active-duration limit.',
+            'Select a browser window, then start capture and play the video. Drag on the preview to capture only part of the window. Keep the browser restored.',
             'Opens a separate Chromium window. Consent, ads, login, or restricted playback may prevent automation. Use Browser window capture if it fails.',
         ][index])
         if is_window and self.sender() is self.method:
             self.tabs.setCurrentIndex(0)
+            self.refresh_windows()
 
     def browse_video(self):
         path, _ = QFileDialog.getOpenFileName(self, 'Open video', '', 'Videos (*.mp4 *.webm *.mov *.mkv);;All files (*)')
@@ -540,6 +547,8 @@ class Studio(QMainWindow):
         fallback = self.fallback.isChecked()
         self.invalidate_crop()
         generation = self.crop_generation
+        self.preview_job_generation = generation
+        self.status_label.setText('Loading window preview…')
         def task(_control, _progress):
             if fallback:
                 time.sleep(3)  # Allow the selected browser to become foreground.
@@ -561,6 +570,9 @@ class Studio(QMainWindow):
         if worker:
             worker.deleteLater()
         self.preview_button.setEnabled(not self.busy)
+        if (self.preview_job_generation != self.crop_generation and not self.busy
+                and self.method.currentIndex() == 1 and self.windows.currentData()):
+            QTimer.singleShot(0, self.window_preview)
 
     def run_job(self, function, result, pausable=False):
         if self.busy:
@@ -629,7 +641,7 @@ class Studio(QMainWindow):
             self.close()
 
     def start_capture(self):
-        if self.busy or self.preview_job:
+        if self.busy:
             return
         try:
             index = self.method.currentIndex()
@@ -642,8 +654,6 @@ class Studio(QMainWindow):
                 self.source.setText(source)
             if index == 1 and not window:
                 raise ValueError('Refresh browser windows and select the browser to capture.')
-            if index == 1 and not (self.crop_ready and self.crop_selected):
-                raise ValueError('Refresh capture preview and drag a video region before starting capture.')
             if index == 0:
                 executable('ffmpeg')
                 executable('ffprobe')
