@@ -94,8 +94,11 @@ class CoreAcceptance(unittest.TestCase):
         sheets = generate(session, SheetConfig(max_dimension=800))
         self.assertEqual(len(sheets), 2)
         self.assertTrue((session.root / 'frames/frame_000001.png').exists())
-        with self.assertRaises(ValueError):
-            generate(session, SheetConfig(frames_per_sheet=10, columns=1, rows=1))
+        single = generate(session, SheetConfig(frames_per_sheet=10, columns=1, rows=1))
+        self.assertEqual(len(single), 7)
+        pairs = generate(session, SheetConfig(frames_per_sheet=10, columns=2, rows=1))
+        self.assertEqual(len(pairs), 4)
+        self.assertEqual(len(list((session.root / 'frames').glob('*.png'))), 7)
 
     def test_unsafe_metadata_and_unwritable_output(self):
         session = self.session()

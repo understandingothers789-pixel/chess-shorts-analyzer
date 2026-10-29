@@ -86,3 +86,5 @@ The Windows GitHub Actions workflow runs core, browser, and offscreen desktop te
 - **Last captured frame** displays a reduced preview of the latest saved image while capture runs (updated at most twice per second). It is a visual check, not a real-time playback monitor.
 - Browser capture previews the selected window automatically. Drag a crop if you want only part of the window; otherwise it captures the entire window. Changing windows clears the crop. A delayed preview from an older selection is discarded.
 - **Show exported ZIP** reveals the ZIP in Windows Explorer after export, or opens its containing folder on other platforms. It also works when reopening a session with an existing export.
+
+Contact sheet grids adjust automatically: if the requested count exceeds the grid, extra frames go onto subsequent sheets in chronological order. The **Two frames · side by side** preset gives larger images for inspection. Originals remain unchanged.

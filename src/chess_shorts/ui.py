@@ -228,7 +228,7 @@ class Studio(QMainWindow):
 
         sheets, form = group('03   Contact sheets')
         self.sheet_preset = QComboBox()
-        self.sheet_preset.addItems(['Standard · 10 frames', 'High detail · 4 frames', 'Maximum detail · 1 frame', 'Custom'])
+        self.sheet_preset.addItems(['Standard · 10 frames', 'High detail · 4 frames', 'Maximum detail · 1 frame', 'Custom', 'Two frames · side by side'])
         self.per_sheet = integer(10, 1, 100)
         self.columns = integer(2, 1, 20)
         self.rows = integer(5, 1, 100)
@@ -383,7 +383,7 @@ class Studio(QMainWindow):
         self.fallback.toggled.connect(self.invalidate_crop)
         self.crop_preview.changed.connect(self.mark_crop)
         self.source.textChanged.connect(self.update_estimate)
-        for widget in (self.start, self.end, self.per_sheet):
+        for widget in (self.start, self.end, self.per_sheet, self.columns, self.rows):
             widget.valueChanged.connect(self.update_estimate)
         self.method_changed()
 
@@ -436,7 +436,7 @@ class Studio(QMainWindow):
             duration = self.end.value() - (0 if self.method.currentIndex() == 1 else self.start.value())
             label = ''
         try:
-            self.frame_estimate.setText(label + estimate(duration, self.interval.value(), self.per_sheet.value(), width, height))
+            self.frame_estimate.setText(label + estimate(duration, self.interval.value(), min(self.per_sheet.value(), self.columns.value() * self.rows.value()), width, height))
         except ValueError:
             self.frame_estimate.setText('Set an end later than start to estimate capture size.')
 
@@ -474,8 +474,8 @@ class Studio(QMainWindow):
         self.presets.blockSignals(False)
 
     def layout_preset(self, index):
-        if index < 3:
-            count, columns, rows = [(10, 2, 5), (4, 2, 2), (1, 1, 1)][index]
+        if index in (0, 1, 2, 4):
+            count, columns, rows = {0: (10, 2, 5), 1: (4, 2, 2), 2: (1, 1, 1), 4: (2, 2, 1)}[index]
             self.per_sheet.setValue(count)
             self.columns.setValue(columns)
             self.rows.setValue(rows)

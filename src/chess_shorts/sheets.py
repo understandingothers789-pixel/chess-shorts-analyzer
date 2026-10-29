@@ -44,8 +44,6 @@ class SheetConfig:
     def validate(self):
         if not (1 <= self.frames_per_sheet <= 100 and 1 <= self.columns <= 20 and 1 <= self.rows <= 100):
             raise ValueError("Use 1–100 frames and rows, and 1–20 columns.")
-        if self.frames_per_sheet > self.columns * self.rows:
-            raise ValueError("Columns × rows must accommodate frames per sheet.")
         if not (0 <= self.spacing <= 200 and 8 <= self.timestamp_size <= 150 and 0 <= self.frame_width <= 16000):
             raise ValueError("Invalid spacing, timestamp size, or frame width.")
         if self.format not in ("PNG", "JPEG"):
