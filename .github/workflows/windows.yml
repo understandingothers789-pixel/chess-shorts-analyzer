@@ -10,6 +10,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          architecture: x64
       - name: Install FFmpeg
         shell: pwsh
         run: choco install ffmpeg --yes --no-progress
@@ -30,8 +31,60 @@ jobs:
       - name: Build desktop executable
         shell: pwsh
         run: .\scripts\build_windows.ps1
+      - name: Check that the packaged app starts
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          $app = Start-Process .\dist\ChessShortsStudio\ChessShortsStudio.exe -PassThru
+          try {
+            if ($app.WaitForExit(8000)) {
+              throw "Packaged application exited during startup (code $($app.ExitCode))."
+            }
+          } finally {
+            if (-not $app.HasExited) { Stop-Process -Id $app.Id }
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: ChessShortsStudio-windows
           path: dist/ChessShortsStudio/
           if-no-files-found: error
+  release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: windows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ChessShortsStudio-windows
+          path: ChessShortsStudio
+      - name: Publish Windows ZIP
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          test -f ChessShortsStudio/ChessShortsStudio.exe
+          archive="ChessShortsStudio-${RELEASE_TAG}-windows-x64.zip"
+          zip -q -r "$archive" ChessShortsStudio
+          unzip -tq "$archive"
+          gh release create "$RELEASE_TAG" "$archive" --verify-tag --generate-notes --latest=false \
+            --title "Chess Shorts Studio $RELEASE_TAG for Windows x64"
+  label-existing-release:
+    if: github.event_name == 'push' && github.ref == 'refs/tags/v0.1.0'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Add versioned filename to the verified v0.2.0 build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          archive=ChessShortsStudio-v0.2.0-windows-x64.zip
+          gh release download v0.2.0 --pattern ChessShortsStudio-windows.zip --output "$archive"
+          unzip -tq "$archive"
+          gh release upload v0.2.0 "$archive"
+          gh release edit v0.2.0 --title "Chess Shorts Studio v0.2.0 for Windows x64" --latest
