@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import shutil
 import time
 from pathlib import Path
@@ -17,9 +18,14 @@ from PySide6.QtWidgets import (
     QScrollArea, QSpinBox, QSplitter, QTabWidget, QVBoxLayout, QWidget,
 )
 
+from . import __version__
 from .capture.local import extract, probe, executable
 from .capture.window import WindowsCapture, capture_window
 from .capture.youtube import capture_youtube, normalize_url
+from .compact_export import (
+    DEFAULT_BATCH_BYTES, MAX_FRAMES_PER_SHEET, MIB, MIN_FRAME_DIMENSION,
+    ExportConfig, export_compact, time_field,
+)
 from .control import Cancelled, CaptureControl
 from .export import export_chatgpt
 from .inspection import difference, find_duplicates
@@ -54,7 +60,7 @@ QToolTip { color:#fff; background:#283347; border:1px solid #52627a; }
 try:
     APP_VERSION = version('chess-shorts-analyzer')
 except PackageNotFoundError:
-    APP_VERSION = '0.1.0'
+    APP_VERSION = __version__
 
 
 class Worker(QThread):
@@ -156,6 +162,8 @@ class Studio(QMainWindow):
         self.crop_selected = False
         self.crop_generation = 0
         self.last_export = None
+        self.last_compact_export = None
+        self.compact_export_running = False
         self.build()
         self.restore_settings()
         self.refresh_library()
@@ -260,8 +268,6 @@ class Studio(QMainWindow):
         self.output = QLineEdit(str(Path.home() / 'Documents' / 'ChessShortsStudio'))
         form.addRow(self.output)
         form.addRow(button('Choose session library…', self.browse_output))
-        self.include_frames = QCheckBox('Include original frames in export')
-        form.addRow(self.include_frames)
         left.addWidget(storage)
         self.storage_group = storage
         left.addStretch()
@@ -311,6 +317,7 @@ class Studio(QMainWindow):
         compare_layout.addWidget(comparison, 1)
         self.tabs.addTab(compare_page, 'Compare A / B')
         self.live_tab_index = self.tabs.addTab(self.live_view, 'Last captured frame')
+        self.build_chatgpt_export()
         self.pinned = None
         center_layout.addWidget(self.tabs, 1)
         self.status_label = QLabel('Ready · All sessions stay on this computer')
@@ -362,7 +369,7 @@ class Studio(QMainWindow):
         self.stop_button = button('■  Stop', self.stop_capture)
         self.pause_button = button('Ⅱ  Pause', self.toggle_pause)
         self.generate_button = button('Generate Contact Sheets', self.generate_sheets)
-        self.export_button = button('Export for ChatGPT', self.export_session, 'export')
+        self.export_button = button('Export for ChatGPT', self.open_chatgpt_export, 'export')
         self.folder_button = button('Open Output Folder', self.open_output)
         self.sheets_folder_button = button('Open Contact Sheets Folder', self.open_sheets)
         for widget in (self.start_button, self.pause_button, self.stop_button, self.generate_button,
@@ -399,6 +406,183 @@ class Studio(QMainWindow):
         for widget in (self.start, self.end, self.per_sheet, self.columns, self.rows):
             widget.valueChanged.connect(self.update_estimate)
         self.method_changed()
+
+    def build_chatgpt_export(self):
+        self.export_page = QScrollArea()
+        self.export_page.setWidgetResizable(True)
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        self.export_session_label = QLabel()
+        self.export_session_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.export_session_label.setWordWrap(True)
+        layout.addWidget(self.export_session_label)
+        self.export_options, form = group('Compact image export')
+        self.export_range = QComboBox()
+        for label, value in [('All captured frames', 'all'), ('Time range', 'time'),
+                             ('Frame-number range', 'frame')]:
+            self.export_range.addItem(label, value)
+        form.addRow('Selection', self.export_range)
+        self.export_time_start = number(0, 0, 864000, 6)
+        self.export_time_end = number(0, 0, 864000, 6)
+        self.export_first_frame = integer(1, 1, 1)
+        self.export_last_frame = integer(1, 1, 1)
+        for label, widget in [('Start (seconds)', self.export_time_start), ('End (seconds)', self.export_time_end),
+                              ('First frame', self.export_first_frame), ('Last frame', self.export_last_frame)]:
+            form.addRow(label, widget)
+        self.export_range_hint = QLabel()
+        self.export_range_hint.setWordWrap(True)
+        form.addRow(self.export_range_hint)
+        self.export_format = QComboBox()
+        self.export_format.addItem('Individual JPEG frames', 'frames')
+        self.export_format.addItem('Contact sheets (JPEG)', 'sheets')
+        form.addRow('Image format', self.export_format)
+        self.export_budget = number(DEFAULT_BATCH_BYTES / MIB, .01, 100)
+        self.export_budget.setSuffix(' MiB')
+        form.addRow('ChatGPT export size per batch', self.export_budget)
+        self.export_quality = integer(86, 65, 95)
+        self.export_dimension = integer(1280, MIN_FRAME_DIMENSION, 2048)
+        self.export_dimension.setSuffix(' px')
+        self.export_per_sheet = integer(4, 1, MAX_FRAMES_PER_SHEET)
+        form.addRow('JPEG quality', self.export_quality)
+        form.addRow('Maximum side per frame', self.export_dimension)
+        form.addRow('Frames per contact sheet', self.export_per_sheet)
+        self.export_zip_batches = QCheckBox('Also save a ZIP for each batch')
+        form.addRow(self.export_zip_batches)
+        hint = QLabel(
+            'Smaller JPEG copies reduce upload size. Original captures stay in the session. '
+            'A tight budget can add batches, split sheets, or reduce an individual frame’s JPEG quality or size. '
+            'The budget applies to JPEG files on disk. ChatGPT sets its own message and attachment limits.'
+        )
+        hint.setWordWrap(True)
+        hint.setObjectName('muted')
+        form.addRow(hint)
+        self.build_compact_button = button('Create ChatGPT export', self.start_compact_export, 'export')
+        form.addRow(self.build_compact_button)
+        layout.addWidget(self.export_options)
+        self.export_summary = QLabel()
+        self.export_summary.setWordWrap(True)
+        layout.addWidget(self.export_summary)
+        self.open_compact_button = button('Open export folder', self.open_compact_export)
+        layout.addWidget(self.open_compact_button)
+        self.export_batches = QListWidget()
+        self.export_batches.setMinimumHeight(106)
+        self.export_batches.setMaximumHeight(184)
+        layout.addWidget(self.export_batches)
+
+        full_quality, full_form = group('Full-quality export')
+        self.legacy_export_group = full_quality
+        self.include_frames = QCheckBox('Include original frames in ZIP')
+        full_form.addRow(self.include_frames)
+        self.full_quality_button = button('Create full-quality ZIP', self.export_session)
+        full_form.addRow(self.full_quality_button)
+        layout.addWidget(full_quality)
+        layout.addStretch()
+        self.export_page.setWidget(content)
+        self.tabs.addTab(self.export_page, 'ChatGPT export')
+        self.export_range.currentIndexChanged.connect(self.update_export_options)
+        self.export_format.currentIndexChanged.connect(self.update_export_options)
+        self.reset_compact_export()
+
+    def update_export_options(self, *_args):
+        form = self.export_options.layout()
+        selection = self.export_range.currentData()
+        for widget in (self.export_time_start, self.export_time_end):
+            form.setRowVisible(widget, selection == 'time')
+        for widget in (self.export_first_frame, self.export_last_frame):
+            form.setRowVisible(widget, selection == 'frame')
+        form.setRowVisible(self.export_range_hint, selection != 'all')
+        form.setRowVisible(self.export_per_sheet, self.export_format.currentData() == 'sheets')
+        if selection == 'time' and self.session:
+            elapsed = time_field(self.session) == 'elapsed_capture_seconds'
+            basis = 'Elapsed screen-capture time (excluding pauses)' if elapsed else 'Video time'
+            self.export_range_hint.setText(f'{basis} in seconds. Both endpoints are included.')
+        elif selection == 'frame':
+            self.export_range_hint.setText('All captured frame numbers from first through last are included.')
+
+    def reset_compact_export(self):
+        session = self.session
+        frames = session.data['frames'] if session else []
+        self.export_session_label.setText(
+            f'{session.data["name"]} · {len(frames)} captured frames' if session
+            else 'Open a capture from Sessions or capture a video to start.'
+        )
+        self.export_options.setEnabled(bool(frames))
+        self.legacy_export_group.setEnabled(bool(session))
+        self.export_range.setCurrentIndex(0)
+        self.export_first_frame.setMaximum(max(1, len(frames)))
+        self.export_last_frame.setMaximum(max(1, len(frames)))
+        self.export_first_frame.setValue(1)
+        self.export_last_frame.setValue(max(1, len(frames)))
+        self.export_time_start.setValue(0)
+        field = time_field(session) if session else None
+        end = max((frame.get(field) or 0 for frame in frames), default=0)
+        self.export_time_end.setValue(math.ceil(end * 1_000_000) / 1_000_000)
+        self.update_export_options()
+        self.last_compact_export = None
+        self.open_compact_button.setEnabled(False)
+        self.export_summary.clear()
+        self.export_batches.clear()
+        self.export_batches.hide()
+
+    def open_chatgpt_export(self):
+        self.tabs.setCurrentWidget(self.export_page)
+
+    def start_compact_export(self):
+        if self.busy or not self.session:
+            return
+        session = self.session
+        kind = self.export_range.currentData()
+        start, end = None, None
+        if kind == 'time':
+            start, end = self.export_time_start.value(), self.export_time_end.value()
+        elif kind == 'frame':
+            start, end = self.export_first_frame.value(), self.export_last_frame.value()
+        config = ExportConfig(
+            layout=self.export_format.currentData(), batch_bytes=int(self.export_budget.value() * MIB),
+            jpeg_quality=self.export_quality.value(), max_frame_dimension=self.export_dimension.value(),
+            frames_per_sheet=self.export_per_sheet.value(), zip_batches=self.export_zip_batches.isChecked(),
+            range_kind=kind, start=start, end=end,
+        )
+        try:
+            config.validate()
+        except ValueError as exc:
+            self.export_summary.setText(str(exc))
+            return
+        self.compact_export_running = True
+        self.export_summary.setText('Preparing JPEGs…')
+        self.export_batches.hide()
+        self.open_compact_button.setEnabled(False)
+        self.status_label.setText('Preparing ChatGPT export…')
+        self.stop_button.setText('Cancel export')
+        self.run_job(lambda control, progress: export_compact(session, config, control, progress),
+                     self.compact_export_done)
+
+    def compact_export_done(self, result):
+        if result is None:
+            self.status_label.setText('ChatGPT export cancelled')
+            self.export_summary.setText('Export cancelled.')
+            return
+        self.last_compact_export = result.folder
+        self.export_batches.clear()
+        batch_count = len(result.batches)
+        summary = f'{result.exported_frames} frames exported · {batch_count} {"batch" if batch_count == 1 else "batches"}'
+        if result.skipped_frames:
+            summary += f' · {len(result.skipped_frames)} skipped. See the list and manifest for details.'
+        self.status_label.setText(summary)
+        self.export_summary.setText(summary)
+        for batch in result.batches:
+            size = batch['image_bytes']
+            count = batch['file_count']
+            self.export_batches.addItem(f'{batch["folder"]} · {count} JPEG{"s" if count != 1 else ""} '
+                                        f'· {size / MIB:.3f} MiB ({size:,} bytes)')
+        for frame in result.skipped_frames:
+            self.export_batches.addItem(f'Frame #{frame["number"]:06d} · {frame["skip_reason"]}')
+        self.export_batches.show()
+        QTimer.singleShot(0, lambda: self.export_page.ensureWidgetVisible(self.export_batches))
+
+    def open_compact_export(self):
+        if self.last_compact_export:
+            self.open_folder(self.last_compact_export)
 
     def window_selected(self, *_args):
         self.invalidate_crop()
@@ -595,7 +779,8 @@ class Studio(QMainWindow):
         self.paused = False
         self.pause_button.setText('Ⅱ  Pause')
         for widget in (self.start_button, self.generate_button, self.export_button, self.duplicates_button,
-                       self.source_group, self.capture_group, self.sheet_group, self.storage_group, self.library):
+                       self.source_group, self.capture_group, self.sheet_group, self.storage_group, self.library,
+                       self.export_options, self.legacy_export_group):
             widget.setEnabled(False)
         self.stop_button.setEnabled(True)
         self.pause_button.setEnabled(pausable)
@@ -612,9 +797,17 @@ class Studio(QMainWindow):
         if total:
             self.progress.setRange(0, total)
             self.progress.setValue(done)
-        self.status_label.setText(f'{"Paused" if self.paused else "Working"} · {done} frames' + (f' / {total}' if total else ''))
+        if self.compact_export_running:
+            if self.job and not self.job.control.stopped:
+                self.status_label.setText(f'Exporting · {done} / {total} frames processed')
+        else:
+            self.status_label.setText(f'{"Paused" if self.paused else "Working"} · {done} frames' + (f' / {total}' if total else ''))
 
     def job_error(self, message):
+        if self.compact_export_running:
+            self.export_summary.setText(message)
+            self.status_label.setText('ChatGPT export needs attention')
+            return
         if self.pending_session:
             try:
                 session = self.pending_session
@@ -638,6 +831,7 @@ class Studio(QMainWindow):
             self.status_label.setText('Task finished · completed files are preserved')
         self.job = None
         self.busy = False
+        self.compact_export_running = False
         self.pending_session = None
         self.paused = False
         self.pause_button.setText('Ⅱ  Pause')
@@ -646,7 +840,11 @@ class Studio(QMainWindow):
             widget.setEnabled(True)
         self.method_changed()
         self.stop_button.setEnabled(False)
+        self.stop_button.setText('■  Stop')
         self.pause_button.setEnabled(False)
+        self.export_options.setEnabled(bool(self.session and self.session.data['frames']))
+        self.legacy_export_group.setEnabled(self.session is not None)
+        self.open_compact_button.setEnabled(self.last_compact_export is not None)
         if self.progress.maximum() == 0:
             self.progress.setRange(0, 100)
             self.progress.setValue(0)
@@ -744,7 +942,8 @@ class Studio(QMainWindow):
         if self.job:
             logging.info('Stop requested')
             self.job.control.stop()
-            self.status_label.setText('Stopping · preserving completed frames…')
+            self.status_label.setText('Cancelling ChatGPT export…' if self.compact_export_running
+                                      else 'Stopping · preserving completed frames…')
             self.stop_button.setEnabled(False)
 
     def toggle_pause(self):
@@ -770,6 +969,7 @@ class Studio(QMainWindow):
         self.last_export = session.root / "contact_sheets.zip"
         self.reveal_export_button.setEnabled(self.last_export.is_file())
         self.session = session
+        self.reset_compact_export()
         self.pinned = None
         self.token += 1
         self.preview_token += 1
@@ -842,7 +1042,9 @@ class Studio(QMainWindow):
         self.frame_label.setText(f'{frame_label(frame)}   ·   {frame["width"]} × {frame["height"]} original pixels')
         path = contained(self.session.root, frame['file'])
         if not path.is_file():
-            self.refresh_frames()
+            self.viewer.scene().clear()
+            self.viewer._item = None
+            self.frame_label.setText(f'{frame_label(frame)} · Source frame file is missing')
             return
         def task(_control, _progress):
             with Image.open(path) as image:
@@ -1035,6 +1237,7 @@ class Studio(QMainWindow):
         for worker in self.thumbnail_jobs:
             worker.requestInterruption()
         self.session = None
+        self.reset_compact_export()
         self.token += 1
         self.preview_token += 1
         self.comparison_token += 1
@@ -1101,7 +1304,10 @@ class Studio(QMainWindow):
                 'end': self.end, 'per_sheet': self.per_sheet, 'columns': self.columns, 'rows': self.rows,
                 'spacing': self.spacing, 'font_size': self.font_size, 'frame_width': self.frame_width,
                 'background': self.background, 'method': self.method, 'sheet_preset': self.sheet_preset,
-                'image_format': self.image_format, 'include_frames': self.include_frames}
+                'image_format': self.image_format, 'include_frames': self.include_frames,
+                'export_format': self.export_format, 'export_budget': self.export_budget,
+                'export_quality': self.export_quality, 'export_dimension': self.export_dimension,
+                'export_per_sheet': self.export_per_sheet, 'export_zip_batches': self.export_zip_batches}
 
     def save_settings(self):
         for key, widget in self.settings_widgets().items():
@@ -1133,10 +1339,14 @@ class Studio(QMainWindow):
                 widget.blockSignals(False)
         self.method_changed()
         self.interval_changed()
+        self.update_export_options()
 
     def closeEvent(self, event):
         if self.busy:
-            if QMessageBox.question(self, 'Capture is running', 'Stop the current task, preserve completed frames, and close?',
+            title = 'Export is running' if self.compact_export_running else 'Capture is running'
+            question = ('Cancel the export and close?' if self.compact_export_running
+                        else 'Stop the current task, preserve completed frames, and close?')
+            if QMessageBox.question(self, title, question,
                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                                     QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
                 self.close_pending = True

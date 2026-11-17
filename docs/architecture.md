@@ -12,11 +12,12 @@
 | `sheets.py` | Aspect-preserving contact sheets, labels, layout validation and allocation limits; transactional regeneration |
 | `inspection.py` | Exact-pixel duplicate candidates and equal-size RGB difference |
 | `export.py` | Atomic ZIP creation, timestamp index and analysis instructions |
+| `compact_export.py` | Time and frame selection, bounded JPEG rendering, ordered batches with byte limits, and export manifest |
 | `ui.py`, `ui_widgets.py` | PySide6 three-panel UI, background operations, bounded asynchronous image loading, crop and zoom widgets |
 
 Long-running capture, sheet generation, export, and duplicate scans run on a QThread. Workers communicate through queued Qt signals; QPixmaps are created on the GUI thread. Thumbnail generation is independent, and full-resolution image requests are limited to two workers plus one replaceable pending request. Images are not all retained in RAM. Native capture is continuous until stopped or the optional active-duration limit is reached; it skips missed capture deadlines instead of creating catch-up duplicates.
 
-Each capture writes only into its own session. A completed PNG is atomically placed before metadata references it. Metadata saves use a temporary file, flush, fsync, and atomic replacement. Sheet generation stages a complete new set before replacing the old set; a failed generation keeps the previous sheets. The exporter stages a ZIP before replacing the destination. Originals are never modified by sheet settings, comparisons, or duplicate review.
+Each capture writes only into its own session. A completed PNG is atomically placed before metadata references it. Metadata saves use a temporary file, flush, fsync, and atomic replacement. Sheet generation stages a complete new set before replacing the old set; a failed generation keeps the previous sheets. The full-quality exporter stages a ZIP before replacing the destination. The compact exporter holds at most one group of source copies and publishes a new folder after writing the batches and manifest. Cancelling or failing removes the staged output. Originals are never modified by export, sheet settings, comparisons, or duplicate review.
 
 Public capture backends can be tested without the desktop. Tests use synthetic footage; native scheduling tests inject an image-producing backend rather than pretending that Linux can exercise Win32 graphics capture. Playwright integration uses a real browser and an ordinary local HTML video with HTTP byte-range support. The desktop test exercises actual Qt signals, threads, image viewing, settings, and export offscreen.
 

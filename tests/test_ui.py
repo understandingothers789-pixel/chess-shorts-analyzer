@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import os
 import subprocess
 import tempfile
@@ -42,15 +43,16 @@ class DesktopIntegration(unittest.TestCase):
                 studio.output.setText(str(root / 'sessions'))
                 studio.source.setText(str(video))
                 studio.show()
+                studio.interval.setValue(.1)
                 studio.inspect_video()
                 self.wait_for(lambda: not studio.busy)
-                self.assertIn('4 requested frames', studio.frame_estimate.text())
+                self.assertIn('20 requested frames', studio.frame_estimate.text())
                 studio.start_capture()
                 self.assertTrue(studio.busy)
                 self.wait_for(lambda: not studio.busy)
                 self.assertIsNotNone(studio.session)
-                self.assertEqual(studio.gallery.count(), 4)
-                self.assertEqual(len(studio.session.data['contact_sheets']), 1)
+                self.assertEqual(studio.gallery.count(), 20)
+                self.assertEqual(len(studio.session.data['contact_sheets']), 2)
                 self.wait_for(lambda: not studio.jobs and not studio.thumbnail_jobs)
                 self.assertIsNotNone(studio.viewer._item)
                 studio.pin_frame()
@@ -59,7 +61,27 @@ class DesktopIntegration(unittest.TestCase):
                 self.wait_for(lambda: not studio.jobs)
                 self.assertIsNotNone(studio.compare_left._item)
                 self.assertIsNotNone(studio.compare_right._item)
-                studio.export_session()
+                studio.export_button.click()
+                self.assertIs(studio.tabs.currentWidget(), studio.export_page)
+                self.assertEqual(studio.export_budget.value(), 2.5)
+                studio.export_range.setCurrentIndex(studio.export_range.findData('time'))
+                self.assertIn('Video time', studio.export_range_hint.text())
+                studio.export_time_start.setValue(.2)
+                studio.export_time_end.setValue(.6)
+                studio.export_format.setCurrentIndex(studio.export_format.findData('sheets'))
+                studio.export_per_sheet.setValue(2)
+                studio.build_compact_button.click()
+                self.wait_for(lambda: not studio.busy)
+                manifest = json.loads((studio.last_compact_export / 'manifest.json').read_text(encoding='utf-8'))
+                self.assertEqual([frame['number'] for frame in manifest['frames']], [3, 4, 5, 6, 7])
+                self.assertEqual(manifest['settings']['frames_per_sheet'], 2)
+                self.assertEqual(studio.export_batches.count(), len(manifest['batches']))
+                self.assertIn('batch_001', studio.export_batches.item(0).text())
+                self.assertTrue(studio.open_compact_button.isEnabled())
+                with patch('chess_shorts.ui.QDesktopServices.openUrl', return_value=True) as opened:
+                    studio.open_compact_button.click()
+                    self.assertEqual(Path(opened.call_args.args[0].toLocalFile()), studio.last_compact_export)
+                studio.full_quality_button.click()
                 self.wait_for(lambda: not studio.busy)
                 self.assertTrue((studio.session.root / 'contact_sheets.zip').exists())
                 self.assertFalse(warning.called, warning.call_args_list)
@@ -69,8 +91,47 @@ class DesktopIntegration(unittest.TestCase):
                 again = Studio()
                 self.assertEqual(again.source.text(), str(video))
                 self.assertEqual(again.output.text(), str(root / 'sessions'))
-                self.assertEqual(again.interval.value(), .5)
+                self.assertEqual(again.interval.value(), .1)
+                self.assertEqual(again.export_format.currentData(), 'sheets')
+                self.assertEqual(again.export_per_sheet.value(), 2)
                 again.close()
+
+    def test_compact_export_reports_missing_originals_and_range_errors_inline(self):
+        from PIL import Image
+        from chess_shorts.session import Session
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            settings = QSettings(str(root / 'settings.ini'), QSettings.Format.IniFormat)
+            session = Session.create(root, 'window', .1, 'Synthetic Brave')
+            with Image.new('RGB', (120, 160), 'navy') as image:
+                session.record(image, elapsed=.1)
+                session.record(image, elapsed=.2)
+            session.finish()
+            (session.root / session.data['frames'][0]['file']).unlink()
+            stored = (session.root / 'metadata.json').read_bytes()
+            with patch('chess_shorts.ui.QSettings', return_value=settings), patch('chess_shorts.ui.QMessageBox.warning') as warning:
+                studio = Studio()
+                try:
+                    studio.open_session_path(session.root)
+                    studio.export_button.click()
+                    self.assertEqual(studio.gallery.count(), 2)
+                    studio.export_range.setCurrentIndex(studio.export_range.findData('time'))
+                    self.assertIn('Elapsed screen-capture time', studio.export_range_hint.text())
+                    studio.export_time_start.setValue(.9)
+                    studio.export_time_end.setValue(1)
+                    with self.assertLogs(level='ERROR'):
+                        studio.build_compact_button.click()
+                        self.wait_for(lambda: not studio.busy)
+                    self.assertIn('No captured frames match', studio.export_summary.text())
+                    studio.export_range.setCurrentIndex(studio.export_range.findData('frame'))
+                    studio.build_compact_button.click()
+                    self.wait_for(lambda: not studio.busy)
+                    self.assertIn('1 skipped', studio.export_summary.text())
+                    self.assertIn('#000001', studio.export_batches.item(1).text())
+                    self.assertEqual((session.root / 'metadata.json').read_bytes(), stored)
+                    self.assertFalse(warning.called)
+                finally:
+                    studio.close()
 
     def test_window_capture_crop_preview_pause_stop_and_export(self):
         from PIL import Image

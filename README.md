@@ -20,7 +20,7 @@ For optional YouTube URL automation, open Command Prompt in the app folder and r
 3. Optionally drag a rectangle around the video in the preview. Without a crop the app captures the whole browser window.
 4. Choose an interval (default **0.5 seconds**). Click **Start Capture**. During the three-second countdown, switch to Brave and play the video.
 5. Click **Stop** when finished. Completed frames are preserved and contact sheets are generated automatically. Pause/Resume pauses collection, not browser playback.
-6. Click **Export for ChatGPT**. Upload the PNG sheets individually using **Open Contact Sheets Folder**, or use the ZIP if your analysis workflow supports it.
+6. Click **Export for ChatGPT**, choose individual JPEGs or contact sheets, then click **Create ChatGPT export**. Use **Open export folder** to find the numbered batches.
 
 Native window capture currently uses PrintWindow, with a foreground-only fallback for compatible surfaces. It does not promise minimized, obscured, protected, or every GPU window. Check the preview; see [limitations](docs/limitations.md). Actual elapsed capture times are labeled separately from media timestamps.
 
@@ -38,7 +38,10 @@ For detailed capture choose **Detailed animation capture**, set a start/end (for
 - **Contact sheets** offers 10, 4, or 1 frame presets and custom rows/columns, spacing, background, labels, PNG/JPEG, and output frame width. Zero width preserves original pixels. Oversized sheets split automatically. PNG is recommended for detailed analysis.
 - **Sessions** reopens, renames, deletes after confirmation, regenerates, and re-exports local sessions. Double-click a session or open a folder containing `metadata.json`. Settings persist between launches.
 - **YouTube URL** normalizes Shorts/watch/share URLs and attempts Playwright-controlled seeking in a separate Chromium profile. It does not use your Brave login or bypass restrictions. If automation fails, select Browser window and capture the video normally.
-- **Export for ChatGPT** creates `contact_sheets.zip` in the session folder with sheets, JSON metadata, CSV timestamp index, and analysis instructions. Individual originals are optional. Nothing is uploaded by the app.
+- **Export for ChatGPT** creates a compact copy of the open session. Choose all captures or specify an inclusive time or frame-number range. Time ranges use video timestamps for local videos and YouTube URL captures, and active elapsed capture time for browser window captures.
+- Choose **Individual JPEG frames** or **Contact sheets (JPEG)** with up to six labeled frames per sheet. JPEG quality and maximum frame size are adjustable. The default batch budget is **2.5 MiB** total JPEG size on disk. The app starts another batch when needed and may split a sheet or reduce a single image’s quality or size to fit. If an image cannot fit at the minimum export detail, increase the budget and retry. Original captures stay in the session.
+- Open the export folder and attach the JPEGs from `batch_001` in filename order, then continue with the other batches in order. The batch budget is an export target. ChatGPT applies its own message and attachment limits, so send smaller groups if needed. `manifest.json` records exact timestamps, capture details, and any missing or unreadable frames. Optional batch ZIPs are saved alongside the batches, and nothing is uploaded by the app.
+- **Create full-quality ZIP** in the ChatGPT export panel creates the original `contact_sheets.zip` with the existing sheets, metadata, CSV timestamp index, and analysis instructions. **Include original frames in ZIP** adds the original captures.
 
 Default library: `Documents/ChessShortsStudio` (change it under Local storage).
 
@@ -48,7 +51,14 @@ ChessShort_YYYY-MM-DD_HHMMSS_unique/
   contact_sheets/sheet_001.png
   details/                         # nested detailed sessions
   metadata.json
-  contact_sheets.zip               # after Export for ChatGPT
+  contact_sheets.zip               # after Create full-quality ZIP
+  chatgpt_exports/
+    export_YYYYMMDD_HHMMSS_unique/
+      manifest.json
+      UPLOAD_INSTRUCTIONS.txt
+      batch_001/                   # JPEGs to attach directly
+      batch_002/
+      archives/                    # optional batch ZIPs
 ```
 
 Metadata includes source/title when known, UTC capture date, method, requested interval, actual media or elapsed timestamps, dimensions, sampling policy, sheet configuration, and interruptions/errors. Unknown fields stay null. A live window capture does not know the video's URL or playback timestamp.
@@ -77,7 +87,7 @@ See [samples](samples/README.md), [validation](docs/VALIDATION.md), and [archite
 
 Run `scripts/build_windows.ps1` on Windows after installation. Distribute the entire `dist/ChessShortsStudio` directory; the entry point is `ChessShortsStudio.exe`. FFmpeg remains an external prerequisite, and optional Playwright Chromium is installed in the user's normal browser cache. There is no signed installer yet.
 
-The Windows GitHub Actions workflow runs core, browser, and offscreen desktop tests and builds a downloadable `ChessShortsStudio-windows` artifact. This task has not executed that workflow or produced a Windows executable on Linux. Native Brave acceptance testing remains required. Review [third-party licenses](docs/THIRD_PARTY.md) before distributing a bundle.
+The Windows GitHub Actions workflow runs core, browser, and offscreen desktop tests and builds a downloadable `ChessShortsStudio-windows` artifact. Sign in to GitHub, open a successful run under **Actions**, and find the ZIP under **Artifacts**. Native Brave capture can be tested with the everyday workflow above. Review [third-party licenses](docs/THIRD_PARTY.md) before distributing a bundle.
 
 ## First-run checks and capture helpers
 
@@ -85,6 +95,6 @@ The Windows GitHub Actions workflow runs core, browser, and offscreen desktop te
 - **Inspect video / estimate** reads the selected local video's duration and dimensions. Requested frame count, minimum sheet count, and approximate uncompressed image size update when you change the interval, range, or frames per sheet. These are estimates: VFR sampling, PNG/JPEG compression, layout splitting, and sheet spacing affect actual results. Before inspecting, a clearly labeled 30-second example is shown.
 - **Last captured frame** displays a reduced preview of the latest saved image while capture runs (updated at most twice per second). It is a visual check, not a real-time playback monitor.
 - Browser capture previews the selected window automatically. Drag a crop if you want only part of the window; otherwise it captures the entire window. Changing windows clears the crop. A delayed preview from an older selection is discarded.
-- **Show exported ZIP** reveals the ZIP in Windows Explorer after export, or opens its containing folder on other platforms. It also works when reopening a session with an existing export.
+- **Show exported ZIP** reveals the full-quality ZIP in Windows Explorer, or opens its containing folder on other platforms. It also works when reopening a session with an existing full-quality ZIP.
 
 Contact sheet grids adjust automatically: if the requested count exceeds the grid, extra frames go onto subsequent sheets in chronological order. The **Two frames · side by side** preset gives larger images for inspection. Originals remain unchanged.
