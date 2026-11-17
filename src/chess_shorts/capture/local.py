@@ -26,6 +26,18 @@ def executable(name):
     return found
 
 
+def _filter_file_option(ffmpeg):
+    help_text = subprocess.run(
+        [ffmpeg, "-hide_banner", "-h", "full"], check=True,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    ).stdout
+    # FFmpeg 7 documents the new syntax beside the old option. FFmpeg 9
+    # removed the old option altogether.
+    legacy = next((line for line in help_text.splitlines() if line.startswith(b"-filter_script")), b"")
+    return "-filter_script:v" if legacy and b"-/filter" not in legacy else "-/filter:v"
+
+
 def run_json(args, control=None):
     with subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                           encoding='utf-8', errors='replace',
@@ -130,6 +142,9 @@ def _extract(path: Path, session: Session, start=0.0, end=None, control=None, pr
                          "range_start_seconds": start, "range_end_seconds": end,
                          "sampling_policy": "first source frame at or after each target; duplicate selections omitted"})
     session.save()
+    ffmpeg = executable("ffmpeg")
+    filter_option = _filter_file_option(ffmpeg)
+    control.checkpoint()
     with tempfile.TemporaryDirectory(prefix=".extract-", dir=session.root) as temp:
         folder = Path(temp)
         expression = "+".join(f"eq(n\\,{i})" for i, _, _ in plan)
@@ -138,9 +153,9 @@ def _extract(path: Path, session: Session, start=0.0, end=None, control=None, pr
         log = folder / "ffmpeg.log"
         with log.open("w+", encoding="utf-8") as errors:
             process = subprocess.Popen([
-                executable("ffmpeg"), "-hide_banner", "-loglevel", "error", "-nostdin",
+                ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin",
                 "-threads", "2", "-i", str(path.resolve()), "-map", "0:v:0",
-                "-filter_script:v", str(script), "-fps_mode", "vfr", "-threads", "2",
+                filter_option, str(script), "-fps_mode", "vfr", "-threads", "2",
                 str(folder / "frame_%06d.png")], stdout=subprocess.DEVNULL, stderr=errors,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             try:

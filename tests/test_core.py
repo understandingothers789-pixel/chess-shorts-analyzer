@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from PIL import Image
 
-from chess_shorts.capture.local import extract, sampling_plan
+from chess_shorts.capture.local import _filter_file_option, extract, sampling_plan
 from chess_shorts.export import export_chatgpt
 from chess_shorts.session import Session
 from chess_shorts.sheets import SheetConfig, generate
@@ -116,6 +116,18 @@ if __name__ == '__main__':
 
 
 class ReliabilityTests(unittest.TestCase):
+    def test_filter_file_option_on_new_and_old_ffmpeg(self):
+        help_variants = (
+            (b'-filter_script[:<stream_spec>] <filename>  read filtergraph from a file', '-filter_script:v'),
+            (b'-filter_script[:<stream_spec>] <filename>  deprecated, use -/filter instead', '-/filter:v'),
+            (b'-filter[:<stream_spec>] <filter_graph>  apply specified filters', '-/filter:v'),
+        )
+        with patch('chess_shorts.capture.local.subprocess.run') as ffmpeg:
+            for help_text, option in help_variants:
+                with self.subTest(help_text=help_text):
+                    ffmpeg.return_value.stdout = help_text
+                    self.assertEqual(_filter_file_option('ffmpeg'), option)
+
     def test_real_variable_frame_rate_extraction(self):
         from chess_shorts.capture.local import frame_times
         with tempfile.TemporaryDirectory() as directory:
