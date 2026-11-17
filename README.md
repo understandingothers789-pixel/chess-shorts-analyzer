@@ -2,7 +2,7 @@
 
 A local-first Windows 11 desktop app for capturing and inspecting video frames, generating timestamped contact sheets, and exporting visual research for ChatGPT. No API keys, subscriptions, chess engine, or video editor.
 
-**[Download the Windows build](https://github.com/understandingothers789-pixel/chess-shorts-analyzer/actions/runs/44190643157)** — Sign in to GitHub, scroll to **Artifacts**, and download **ChessShortsStudio-windows**. Extract the ZIP and run `ChessShortsStudio.exe`.
+**[Download the Windows build (.zip)](https://github.com/understandingothers789-pixel/chess-shorts-analyzer/releases/latest/download/ChessShortsStudio-windows.zip)**. Extract the ZIP, open the `ChessShortsStudio` folder, and run `ChessShortsStudio.exe`.
 
 ![Running desktop application](docs/studio-screenshot.png)
 
@@ -89,7 +89,7 @@ See [samples](samples/README.md), [validation](docs/VALIDATION.md), and [archite
 
 Run `scripts/build_windows.ps1` on Windows after installation. Distribute the entire `dist/ChessShortsStudio` directory; the entry point is `ChessShortsStudio.exe`. FFmpeg remains an external prerequisite, and optional Playwright Chromium is installed in the user's normal browser cache. There is no signed installer yet.
 
-The Windows GitHub Actions workflow runs core, browser, and offscreen desktop tests and builds a downloadable `ChessShortsStudio-windows` artifact. For newer builds, sign in to GitHub, open a successful run in [Windows validation and desktop build](https://github.com/understandingothers789-pixel/chess-shorts-analyzer/actions/workflows/windows.yml), and find the ZIP under **Artifacts**. Native Brave capture can be tested with the everyday workflow above. Review [third-party licenses](docs/THIRD_PARTY.md) before distributing a bundle.
+The Windows GitHub Actions workflow runs core, browser, and offscreen desktop tests and checks that the packaged executable starts. Builds triggered by version tags publish a Windows ZIP to GitHub Releases. Review [third-party licenses](docs/THIRD_PARTY.md) before distributing a bundle.
 
 ## First-run checks and capture helpers
 

@@ -30,8 +30,42 @@ jobs:
       - name: Build desktop executable
         shell: pwsh
         run: .\scripts\build_windows.ps1
+      - name: Check that the packaged app starts
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          $app = Start-Process .\dist\ChessShortsStudio\ChessShortsStudio.exe -PassThru
+          try {
+            if ($app.WaitForExit(8000)) {
+              throw "Packaged application exited during startup (code $($app.ExitCode))."
+            }
+          } finally {
+            if (-not $app.HasExited) { Stop-Process -Id $app.Id }
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: ChessShortsStudio-windows
           path: dist/ChessShortsStudio/
           if-no-files-found: error
+  release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: windows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ChessShortsStudio-windows
+          path: ChessShortsStudio
+      - name: Publish Windows ZIP
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          test -f ChessShortsStudio/ChessShortsStudio.exe
+          zip -q -r ChessShortsStudio-windows.zip ChessShortsStudio
+          unzip -tq ChessShortsStudio-windows.zip
+          gh release create "$RELEASE_TAG" ChessShortsStudio-windows.zip --verify-tag --generate-notes
