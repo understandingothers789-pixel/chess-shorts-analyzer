@@ -10,6 +10,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          architecture: x64
       - name: Install FFmpeg
         shell: pwsh
         run: choco install ffmpeg --yes --no-progress
@@ -66,6 +67,8 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           test -f ChessShortsStudio/ChessShortsStudio.exe
-          zip -q -r ChessShortsStudio-windows.zip ChessShortsStudio
-          unzip -tq ChessShortsStudio-windows.zip
-          gh release create "$RELEASE_TAG" ChessShortsStudio-windows.zip --verify-tag --generate-notes
+          archive="ChessShortsStudio-${RELEASE_TAG}-windows-x64.zip"
+          zip -q -r "$archive" ChessShortsStudio
+          unzip -tq "$archive"
+          gh release create "$RELEASE_TAG" "$archive" --verify-tag --generate-notes \
+            --title "Chess Shorts Studio $RELEASE_TAG for Windows x64"
