@@ -2,7 +2,10 @@
 
 A local-first Windows 11 desktop app for capturing and inspecting video frames, generating timestamped contact sheets, and exporting visual research for ChatGPT. No API keys, subscriptions, chess engine, or video editor.
 
-**[Download the Windows build (.zip)](https://github.com/understandingothers789-pixel/chess-shorts-analyzer/releases/latest/download/ChessShortsStudio-windows.zip)**. Extract the ZIP, open the `ChessShortsStudio` folder, and run `ChessShortsStudio.exe`.
+- **[Download version 0.2 for Windows x64 (.zip)](https://github.com/understandingothers789-pixel/chess-shorts-analyzer/releases/download/v0.2.0/ChessShortsStudio-v0.2.0-windows-x64.zip)**
+- **[Download version 0.1 for Windows x64 (.zip)](https://github.com/understandingothers789-pixel/chess-shorts-analyzer/releases/download/v0.1.0/ChessShortsStudio-v0.1.0-windows-x64.zip)**
+
+Extract the ZIP, open the `ChessShortsStudio` folder, and run `ChessShortsStudio.exe`.
 
 ![Running desktop application](docs/studio-screenshot.png)
 
