@@ -2,6 +2,7 @@
 
 A local-first Windows 11 desktop app for capturing and inspecting video frames, generating timestamped contact sheets, and exporting visual research for ChatGPT. No API keys, subscriptions, chess engine, or video editor.
 
+- **[Download version 0.3.1 for Windows x64 (.zip)](https://github.com/understandingothers789-pixel/chess-shorts-analyzer/releases/download/v0.3.1/ChessShortsStudio-v0.3.1-windows-x64.zip)**
 - **[Download version 0.2 for Windows x64 (.zip)](https://github.com/understandingothers789-pixel/chess-shorts-analyzer/releases/download/v0.2.0/ChessShortsStudio-v0.2.0-windows-x64.zip)**
 - **[Download version 0.1 for Windows x64 (.zip)](https://github.com/understandingothers789-pixel/chess-shorts-analyzer/releases/download/v0.1.0/ChessShortsStudio-v0.1.0-windows-x64.zip)**
 
@@ -47,6 +48,7 @@ Browser and YouTube captures use compact JPEGs in low-storage mode. Identical co
 - **Sessions** reopens, renames, deletes after confirmation, regenerates, and re-exports local sessions. Double-click a session or open a folder containing `metadata.json`. Settings persist between launches.
 - **YouTube URL** normalizes Shorts/watch/share URLs and attempts Playwright-controlled seeking in a separate Chromium profile. It does not use your Brave login or bypass restrictions. If automation fails, select Browser window and capture the video normally.
 - **Export for ChatGPT** creates a compact copy of the open session. Choose picked frames, all captures, or an inclusive time or frame-number range. Time ranges use video timestamps for local videos and YouTube URL captures, and active elapsed capture time for browser window captures.
+- **Apply compact animation preset** sets JPEG contact sheets to four frames per sheet, quality 75, and 640 pixels per frame. Choose your frame range or picks first. You can still fine-tune every setting after applying the preset.
 - Choose **Individual JPEG frames** or **Contact sheets (JPEG)** with up to six labeled frames per sheet. JPEG quality and maximum frame size are adjustable. The default batch budget is **2.5 MiB** total JPEG size on disk. The app starts another batch when needed and may split a sheet or reduce a single image’s quality or size to fit. If an image cannot fit at the minimum export detail, increase the budget and retry. JPEG export leaves the session and its original media intact.
 - Open the export folder and attach the JPEGs from `batch_001` in filename order, then continue with the other batches in order. The batch budget is an export target. ChatGPT applies its own message and attachment limits, so send smaller groups if needed. `manifest.json` records exact timestamps, capture details, and any missing or unreadable frames. Optional batch ZIPs are saved alongside the batches, and nothing is uploaded by the app.
 - **Create full-quality ZIP** in the ChatGPT export panel creates the original `contact_sheets.zip` with the existing sheets, metadata, CSV timestamp index, and analysis instructions. **Include original frames in ZIP** adds the original captures. For indexed videos it decodes the frames into the ZIP, making the extracted session self-contained.

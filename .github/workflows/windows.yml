@@ -50,12 +50,13 @@ jobs:
           path: dist/ChessShortsStudio/
           if-no-files-found: error
   release:
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'Release Windows ')))
     needs: windows
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: ChessShortsStudio-windows
@@ -64,11 +65,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          PUSHED_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
         run: |
           test -f ChessShortsStudio/ChessShortsStudio.exe
+          RELEASE_TAG="${PUSHED_TAG:-$(python -c 'import tomllib; print("v" + tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')}"
           archive="ChessShortsStudio-${RELEASE_TAG}-windows-x64.zip"
           zip -q -r "$archive" ChessShortsStudio
           unzip -tq "$archive"
-          gh release create "$RELEASE_TAG" "$archive" --verify-tag --generate-notes \
+          gh release create "$RELEASE_TAG" "$archive" --target "$GITHUB_SHA" --generate-notes \
             --title "Chess Shorts Studio $RELEASE_TAG for Windows x64"

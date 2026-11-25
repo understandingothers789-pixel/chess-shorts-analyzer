@@ -507,6 +507,9 @@ class Studio(QMainWindow):
         form.addRow('JPEG quality', self.export_quality)
         form.addRow('Maximum side per frame', self.export_dimension)
         form.addRow('Frames per contact sheet', self.export_per_sheet)
+        preset = button('Apply compact animation preset', self.apply_animation_export_preset)
+        preset.setToolTip('JPEG contact sheets · 4 frames per sheet · quality 75 · 640 px per frame')
+        form.addRow('Preset', preset)
         self.export_zip_batches = QCheckBox('Also save a ZIP for each batch')
         form.addRow(self.export_zip_batches)
         hint = QLabel(
@@ -543,6 +546,12 @@ class Studio(QMainWindow):
         self.export_range.currentIndexChanged.connect(self.update_export_options)
         self.export_format.currentIndexChanged.connect(self.update_export_options)
         self.reset_compact_export()
+
+    def apply_animation_export_preset(self):
+        self.export_format.setCurrentIndex(self.export_format.findData('sheets'))
+        self.export_per_sheet.setValue(4)
+        self.export_quality.setValue(75)
+        self.export_dimension.setValue(640)
 
     def update_export_options(self, *_args):
         form = self.export_options.layout()

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "chess-shorts-analyzer"
-version = "0.3.0"
+version = "0.3.1"
 description = "Local-first Windows frame capture and visual research studio"
 readme = "README.md"
 requires-python = ">=3.12"
