@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import bisect
 import json
+import io
+import re
 import math
 import shutil
 import subprocess
@@ -10,9 +12,10 @@ import time
 from pathlib import Path
 
 from PIL import Image
+from fractions import Fraction
 
 from ..control import CaptureControl, Cancelled
-from ..session import Session, validate_interval
+from ..session import Session, utc_now as utc_capture_stamp, validate_interval
 
 
 def executable(name):
@@ -70,11 +73,20 @@ def probe(path: Path, control=None):
     duration = float(info.get("format", {}).get("duration", stream.get("duration", 0)))
     if not math.isfinite(duration) or duration <= 0:
         raise ValueError("Video duration is unavailable; this file cannot be sampled safely.")
-    return {"duration": duration, "width": stream["width"], "height": stream["height"],
+    rotation = next((item.get("rotation", 0) for item in stream.get("side_data_list", [])
+                     if "rotation" in item), 0)
+    width, height = stream["width"], stream["height"]
+    if rotation % 180:
+        width, height = height, width
+    try:
+        fps = float(Fraction(stream.get("avg_frame_rate", "0")))
+    except (ValueError, ZeroDivisionError):
+        fps = 0.0
+    return {"duration": duration, "width": width, "height": height, "fps": fps,
             "title": info.get("format", {}).get("tags", {}).get("title")}
 
 
-def frame_times(path: Path, control=None):
+def frame_times(path: Path, control=None, *, absolute=False):
     info = run_json([executable("ffprobe"), "-v", "error", "-select_streams", "v:0",
                      "-show_frames", "-show_entries", "frame=best_effort_timestamp_time",
                      "-of", "json", str(path.resolve())], control)
@@ -92,28 +104,32 @@ def frame_times(path: Path, control=None):
     result = [(i, max(0.0, t - origin)) for i, t in times]
     if any(b[1] < a[1] for a, b in zip(result, result[1:])):
         raise ValueError("Video timestamps are not chronological.")
-    return result
+    return times if absolute else result
 
 
-def sampling_plan(times, interval, start, end):
+def sampling_plan(times, interval, start, end, control=None):
     validate_interval(interval)
     if not all(math.isfinite(v) for v in (start, end)) or start < 0 or end <= start:
         raise ValueError("End must be later than start; timestamps must be finite and nonnegative.")
     stamps = [t for _, t in times]
     selected = []
-    previous = -1
-    for n in range(math.ceil((end - start) / interval)):
-        target = start + n * interval
+    slot = 0
+    while True:
+        if control and len(selected) % 256 == 0:
+            control.checkpoint()
+        target = start + slot * interval
         if target >= end - 1e-9:
             break
-        # First real source frame at/after requested time; never synthesize duplicates.
+        # First original source frame at or after the requested time.
         at = bisect.bisect_left(stamps, target - 1e-7)
         if at >= len(times) or stamps[at] >= end - 1e-9:
             break
         index, stamp = times[at]
-        if index != previous:
-            selected.append((index, stamp, target))
-            previous = index
+        selected.append((index, stamp, target))
+        # Time slots that would choose the same source frame add no information.
+        slot = max(slot + 1, math.floor((stamp + 1e-7 - start) / interval) + 1)
+        while start + slot * interval - 1e-7 <= stamp:
+            slot += 1
     return selected
 
 
@@ -133,8 +149,37 @@ def _extract(path: Path, session: Session, start=0.0, end=None, control=None, pr
     progress = progress or (lambda *_: None)
     info = probe(path, control)
     end = info["duration"] if end is None else min(end, info["duration"])
+    if session.data.get("storage") == "source":
+        signature = video_signature(path)
+        absolute = frame_times(path, control, absolute=True)
+        if video_signature(path) != signature:
+            raise ValueError("The video changed while it was being indexed.")
+        origin = absolute[0][1]
+        times = [(index, stamp - origin) for index, stamp in absolute]
+        plan = sampling_plan(times, session.data["requested_interval_seconds"], start, end, control)
+        if not plan:
+            raise ValueError("No frames fall inside the requested range.")
+        session.data.update(
+            source=str(path.resolve()), source_signature=signature,
+            source_duration_seconds=info["duration"], video_title=info["title"],
+            range_start_seconds=start, range_end_seconds=end,
+            sampling_policy="first original frame at or after each target; repeated frame selections omitted",
+        )
+        completed = utc_capture_stamp()
+        for n, (index, stamp, target) in enumerate(plan, 1):
+            control.checkpoint()
+            pts = absolute[index][1]
+            unique = (not index or absolute[index - 1][1] != pts) and (
+                index + 1 == len(absolute) or absolute[index + 1][1] != pts)
+            session.register(None, (info["width"], info["height"]), media=stamp, requested=target,
+                             captured_at=completed, source_frame=index, source_pts=pts,
+                             fast_seek=unique, checkpoint=True)
+            if n % 200 == 0 or n == len(plan):
+                progress(n, len(plan))
+        session.finish()
+        return session
     times = frame_times(path, control)
-    plan = sampling_plan(times, session.data["requested_interval_seconds"], start, end)
+    plan = sampling_plan(times, session.data["requested_interval_seconds"], start, end, control)
     if not plan:
         raise ValueError("No frames fall inside the requested range.")
     control.checkpoint()
@@ -199,3 +244,65 @@ def _extract(path: Path, session: Session, start=0.0, end=None, control=None, pr
             raise RuntimeError("FFmpeg returned fewer frames than expected.")
     session.finish("stopped" if control.stopped else "complete")
     return session
+
+
+def video_signature(path: Path):
+    stat = path.stat()
+    return [stat.st_size, stat.st_mtime_ns]
+
+
+def read_indexed_frame(session: Session, frame: dict, control=None, max_side=None):
+    path = Path(session.data["source"])
+    if not path.is_file():
+        raise FileNotFoundError("Original video is missing. Relink it to continue.")
+    if video_signature(path) != session.data["source_signature"]:
+        raise ValueError("The original video changed. Relink the original file or reindex this video.")
+    ffmpeg = executable("ffmpeg")
+
+    def decode(filters, seek=None):
+        args = [ffmpeg, "-hide_banner", "-v", "info" if seek is not None else "error",
+                "-nostdin", "-threads", "2", "-protocol_whitelist", "file",
+                "-filter_threads", "1"]
+        if seek is not None:
+            args += ["-copyts", "-ss", f"{seek:.9f}"]
+        args += ["-i", str(path.resolve()), "-map", "0:v:0"]
+        if max_side:
+            # FFmpeg only resizes preview/compact export requests. Original views remain native.
+            filters += f",scale='min({max_side},iw)':'min({max_side},ih)':force_original_aspect_ratio=decrease"
+        args += ["-vf", filters, "-frames:v", "1", "-f", "image2pipe", "-c:v", "png",
+                 "-threads", "1", "pipe:1"]
+        with subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)) as process:
+            deadline = time.monotonic() + 45
+            try:
+                while True:
+                    try:
+                        output, errors = process.communicate(timeout=0.1)
+                        break
+                    except subprocess.TimeoutExpired:
+                        if control:
+                            control.checkpoint()
+                        if time.monotonic() >= deadline:
+                            raise OSError("Timed out reading the indexed video frame.")
+            except BaseException:
+                process.kill()
+                process.communicate()
+                raise
+            return output if process.returncode == 0 else b"", errors
+
+    if control:
+        control.checkpoint()
+    output = b""
+    if frame.get("fast_seek") and frame["source_pts"] >= 0:
+        pts = frame["source_pts"]
+        seek = max(0, frame["video_timestamp_seconds"] - 0.10)
+        attempt, log = decode(rf"select=gte(t\,{pts - 0.000002:.9f}),showinfo", seek)
+        match = re.search(rb"pts_time:([-+0-9.eE]+)", log)
+        if match and abs(float(match.group(1)) - pts) <= 0.00001:
+            output = attempt
+    if not output:
+        output, _log = decode(rf"select=eq(n\,{frame['source_frame']})")
+    if not output:
+        raise OSError("The indexed frame could not be decoded from the original video.")
+    with Image.open(io.BytesIO(output)) as image:
+        return image.copy()

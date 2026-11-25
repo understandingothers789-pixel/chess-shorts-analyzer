@@ -69,7 +69,7 @@ class ExportConfig:
             raise ValueError('Use JPEG quality 65–95 and a maximum frame dimension of 480–2048 pixels.')
         if not 1 <= self.frames_per_sheet <= MAX_FRAMES_PER_SHEET:
             raise ValueError('Choose 1–6 frames per contact sheet.')
-        if self.range_kind == 'all':
+        if self.range_kind in ('all', 'picked'):
             return
         if self.range_kind not in ('time', 'frame'):
             raise ValueError('Choose all frames, a time range, or a frame-number range.')
@@ -98,7 +98,10 @@ def time_field(session: Session):
 
 def _selected_frames(session, config, field):
     frames = session.data['frames']
-    if config.range_kind != 'all':
+    if config.range_kind == 'picked':
+        picked = set(session.data.get("picked_frames", []))
+        frames = [frame for frame in frames if frame["number"] in picked]
+    elif config.range_kind != 'all':
         range_field = field if config.range_kind == 'time' else 'number'
         frames = [frame for frame in frames if (value := frame.get(range_field)) is not None
                   and config.start <= value <= config.end]
@@ -194,8 +197,8 @@ def _encode(items, config, field, control):
     yield from _encode(items[midpoint:], config, field, control)
 
 
-def _load_copy(path, dimension):
-    with Image.open(path) as original:
+def _load_copy(session, frame, dimension, control):
+    with session.open_frame(frame, control, dimension) as original:
         original.thumbnail((dimension, dimension), Image.Resampling.LANCZOS)
         return original.convert('RGB')
 
@@ -204,6 +207,7 @@ def _frame_entry(frame):
     return {
         'number': frame['number'],
         'source_file': frame['file'],
+        'source_frame_index': frame.get('source_frame'),
         'video_timestamp_seconds': frame.get('video_timestamp_seconds'),
         'elapsed_capture_seconds': frame.get('elapsed_capture_seconds'),
         'requested_timestamp_seconds': frame.get('requested_timestamp_seconds'),
@@ -223,13 +227,13 @@ def _write_export(staging, session, frames, config, field, control, progress):
                 entry = _frame_entry(frame)
                 entries.append(entry)
                 try:
-                    image = _load_copy(contained(session.root, frame['file']), config.max_frame_dimension)
+                    image = _load_copy(session, frame, config.max_frame_dimension, control)
                 except FileNotFoundError:
-                    entry['skip_reason'] = 'Source frame file is missing'
+                    entry['skip_reason'] = 'Original video is missing' if frame['file'] is None else 'Source frame file is missing'
                     skipped.append(entry)
                     continue
-                except (OSError, ValueError, Image.DecompressionBombError):
-                    entry['skip_reason'] = 'Source frame file could not be read'
+                except (OSError, ValueError, Image.DecompressionBombError) as error:
+                    entry['skip_reason'] = str(error) if frame['file'] is None else 'Source frame file could not be read'
                     skipped.append(entry)
                     continue
                 items.append((entry, copies.enter_context(image)))

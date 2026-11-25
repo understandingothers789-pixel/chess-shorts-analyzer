@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import bisect
 import json
 import logging
 import math
@@ -9,17 +10,17 @@ from pathlib import Path
 
 from PIL import Image
 from importlib.metadata import PackageNotFoundError, version
-from PySide6.QtCore import QSettings, QSize, Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtCore import QPoint, QSettings, QSize, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QDesktopServices, QIcon, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
     QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QProgressBar, QPushButton,
-    QScrollArea, QSpinBox, QSplitter, QTabWidget, QVBoxLayout, QWidget,
+    QScrollArea, QSlider, QSpinBox, QSplitter, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from . import __version__
-from .capture.local import extract, probe, executable
+from .capture.local import extract, probe, executable, video_signature
 from .capture.window import WindowsCapture, capture_window
 from .capture.youtube import capture_youtube, normalize_url
 from .compact_export import (
@@ -28,7 +29,7 @@ from .compact_export import (
 )
 from .control import Cancelled, CaptureControl
 from .export import export_chatgpt
-from .inspection import difference, find_duplicates
+from .inspection import difference_images, find_duplicates
 from .readiness import diagnostics, estimate
 from .session import Session, contained, list_sessions, utc_now
 from .sheets import SheetConfig, frame_label, generate
@@ -87,20 +88,27 @@ class Worker(QThread):
 class ThumbnailWorker(QThread):
     thumbnail = Signal(int, int, object)
 
-    def __init__(self, root, frames, token):
+    def __init__(self, session, indices, token):
         super().__init__()
-        self.root, self.frames, self.token = root, list(frames), token
+        self.session, self.indices, self.token = session, indices, token
+        self.attempted = set()
+
+    def checkpoint(self):
+        if self.isInterruptionRequested():
+            raise Cancelled("Thumbnail request changed")
 
     def run(self):
-        for index, frame in enumerate(self.frames):
-            if self.isInterruptionRequested():
-                break
+        for index in self.indices:
             try:
-                with Image.open(contained(self.root, frame['file'])) as image:
-                    image.thumbnail((112, 112), Image.Resampling.LANCZOS)
+                self.checkpoint()
+                with self.session.open_frame(self.session.data['frames'][index], self, 128) as image:
+                    image.thumbnail((104, 48), Image.Resampling.LANCZOS)
                     self.thumbnail.emit(self.token, index, qimage(image))
-            except (OSError, ValueError):
-                continue
+            except Cancelled:
+                break
+            except (OSError, ValueError, RuntimeError, IndexError):
+                pass
+            self.attempted.add(index)
 
 
 def button(text, action, name=None):
@@ -147,6 +155,13 @@ class Studio(QMainWindow):
         self.jobs = []
         self.pending_image_task = None
         self.thumbnail_jobs = []
+        self.thumb_visible = set()
+        self.thumb_loaded = set()
+        self.thumb_timer = QTimer(self)
+        self.thumb_timer.setSingleShot(True)
+        self.thumb_timer.timeout.connect(self.update_thumbnail_window)
+        self.pick_anchor = None
+        self.time_index = []
         self.preview_job = None
         self.token = 0
         self.preview_token = 0
@@ -226,10 +241,12 @@ class Studio(QMainWindow):
         self.mode.addItems(['Overview capture', 'Detailed animation capture'])
         form.addRow('Mode', self.mode)
         self.presets = QComboBox()
-        self.presets.addItems(['0.05 seconds', '0.1 seconds', '0.25 seconds', '0.5 seconds', '1 second', '2 seconds', 'Custom'])
-        self.presets.setCurrentIndex(3)
+        self.interval_options = [.01, .05, .1, .25, .5, 1, 2]
+        self.presets.addItems([f'{value:g} seconds' for value in self.interval_options] + ['Custom'])
+        self.presets.setCurrentIndex(4)
         self.interval = number(.5, .01, 3600, 3)
         self.interval.setSuffix(' s')
+        self.interval.setSingleStep(.01)
         form.addRow('Interval preset', self.presets)
         form.addRow('Interval', self.interval)
         self.start = number(0, 0, 864000, 3)
@@ -268,6 +285,13 @@ class Studio(QMainWindow):
         self.output = QLineEdit(str(Path.home() / 'Documents' / 'ChessShortsStudio'))
         form.addRow(self.output)
         form.addRow(button('Choose session library…', self.browse_output))
+        self.capture_storage = QComboBox()
+        self.capture_storage.addItems(['Low storage · automatic', 'Original PNG files'])
+        self.capture_storage.currentIndexChanged.connect(self.update_estimate)
+        form.addRow('Frame storage', self.capture_storage)
+        self.auto_sheets = QCheckBox('Generate sheets after capture')
+        self.auto_sheets.setToolTip('Leave this off to save space. Generate sheets or export only the frames you pick.')
+        form.addRow(self.auto_sheets)
         left.addWidget(storage)
         self.storage_group = storage
         left.addStretch()
@@ -291,6 +315,21 @@ class Studio(QMainWindow):
         frame_layout.addWidget(self.viewer, 1)
         self.frame_label = QLabel('Import or capture a video to start inspecting frames.')
         frame_layout.addWidget(self.frame_label)
+        self.frame_scrub = QSlider(Qt.Orientation.Horizontal)
+        self.frame_scrub.setAccessibleName('Scrub captured frames')
+        self.frame_scrub.setRange(0, 0)
+        self.frame_scrub.valueChanged.connect(lambda row: self.gallery.setCurrentRow(row))
+        frame_layout.addWidget(self.frame_scrub)
+        seek_row = QHBoxLayout()
+        self.seek_seconds = number(0, 0, 864000, 3)
+        self.seek_seconds.setSingleStep(.01)
+        self.seek_seconds.setSuffix(' s')
+        self.seek_seconds.setAccessibleName('Jump to capture time')
+        seek_row.addWidget(self.seek_seconds)
+        seek_row.addWidget(button('Go to time', self.jump_to_time))
+        seek_row.addWidget(button('Export current frame', self.open_current_export))
+        seek_row.addStretch()
+        frame_layout.addLayout(seek_row)
         nav = QHBoxLayout()
         for text, action in [('← Previous', lambda: self.navigate(-1)), ('Next →', lambda: self.navigate(1)),
                              ('−', lambda: self.viewer.zoom(1 / 1.25)), ('+', lambda: self.viewer.zoom(1.25)),
@@ -340,9 +379,27 @@ class Studio(QMainWindow):
         self.info.setObjectName('muted')
         right_frames.addWidget(self.info)
         self.gallery = QListWidget()
-        self.gallery.setIconSize(QSize(90, 90))
+        self.gallery.setIconSize(QSize(72, 46))
+        self.gallery.setUniformItemSizes(True)
+        self.gallery.setToolTip('Check a frame to pick it, or press Ctrl+Space to toggle the current frame.')
         self.gallery.currentRowChanged.connect(self.select_frame)
+        self.gallery.verticalScrollBar().valueChanged.connect(self.schedule_thumbnails)
+        self.gallery.itemChanged.connect(self.pick_changed)
         right_frames.addWidget(self.gallery, 1)
+        self.pick_count = QLabel('No frames picked')
+        right_frames.addWidget(self.pick_count)
+        pick_row = QHBoxLayout()
+        pick_range = button('Pick through current', self.pick_through_current)
+        pick_range.setToolTip('Pick every frame from the last frame you checked through the current frame.')
+        pick_row.addWidget(pick_range)
+        pick_row.addWidget(button('Clear picks', self.clear_picks))
+        right_frames.addLayout(pick_row)
+        self.export_picks_button = button('Export picked frames', self.open_picked_export, 'export')
+        self.export_picks_button.setEnabled(False)
+        right_frames.addWidget(self.export_picks_button)
+        self.relink_video_button = button('Relink original video…', self.relink_video)
+        self.relink_video_button.hide()
+        right_frames.addWidget(self.relink_video_button)
         right_frames.addWidget(button('Refresh frames', self.refresh_frames))
         right_frames.addWidget(button('Delete current capture…', self.delete_current_capture))
         self.duplicates_button = button('Review exact duplicates…', self.review_duplicates)
@@ -399,6 +456,10 @@ class Studio(QMainWindow):
             action.setShortcut(QKeySequence(key))
             action.triggered.connect(lambda checked=False, d=delta: self.navigate(d))
             self.addAction(action)
+        toggle_pick = QAction('Toggle current frame pick', self)
+        toggle_pick.setShortcut(QKeySequence('Ctrl+Space'))
+        toggle_pick.triggered.connect(self.toggle_current_pick)
+        self.addAction(toggle_pick)
         self.windows.currentIndexChanged.connect(self.window_selected)
         self.fallback.toggled.connect(self.invalidate_crop)
         self.crop_preview.changed.connect(self.mark_crop)
@@ -419,7 +480,7 @@ class Studio(QMainWindow):
         self.export_options, form = group('Compact image export')
         self.export_range = QComboBox()
         for label, value in [('All captured frames', 'all'), ('Time range', 'time'),
-                             ('Frame-number range', 'frame')]:
+                             ('Frame-number range', 'frame'), ('Picked frames', 'picked')]:
             self.export_range.addItem(label, value)
         form.addRow('Selection', self.export_range)
         self.export_time_start = number(0, 0, 864000, 6)
@@ -498,6 +559,9 @@ class Studio(QMainWindow):
             self.export_range_hint.setText(f'{basis} in seconds. Both endpoints are included.')
         elif selection == 'frame':
             self.export_range_hint.setText('All captured frame numbers from first through last are included.')
+        elif selection == 'picked':
+            count = len(self.session.data.get("picked_frames", [])) if self.session else 0
+            self.export_range_hint.setText(f'{count} picked frames. Check frames in the gallery to add them.')
 
     def reset_compact_export(self):
         session = self.session
@@ -513,6 +577,11 @@ class Studio(QMainWindow):
         self.export_last_frame.setMaximum(max(1, len(frames)))
         self.export_first_frame.setValue(1)
         self.export_last_frame.setValue(max(1, len(frames)))
+        if session and session.data.get("picked_frames"):
+            self.export_range.setCurrentIndex(self.export_range.findData("picked"))
+        elif len(frames) > 120:
+            self.export_range.setCurrentIndex(self.export_range.findData("frame"))
+            self.export_last_frame.setValue(1)
         self.export_time_start.setValue(0)
         field = time_field(session) if session else None
         end = max((frame.get(field) or 0 for frame in frames), default=0)
@@ -526,6 +595,19 @@ class Studio(QMainWindow):
 
     def open_chatgpt_export(self):
         self.tabs.setCurrentWidget(self.export_page)
+
+    def open_current_export(self):
+        if self.session and self.gallery.currentRow() >= 0:
+            number = self.gallery.currentRow() + 1
+            self.export_first_frame.setValue(number)
+            self.export_last_frame.setValue(number)
+            self.export_range.setCurrentIndex(self.export_range.findData("frame"))
+            self.open_chatgpt_export()
+
+    def open_picked_export(self):
+        if self.session and self.session.data.get("picked_frames"):
+            self.export_range.setCurrentIndex(self.export_range.findData("picked"))
+            self.open_chatgpt_export()
 
     def start_compact_export(self):
         if self.busy or not self.session:
@@ -633,7 +715,17 @@ class Studio(QMainWindow):
             duration = self.end.value() - (0 if self.method.currentIndex() == 1 else self.start.value())
             label = ''
         try:
-            self.frame_estimate.setText(label + estimate(duration, self.interval.value(), min(self.per_sheet.value(), self.columns.value() * self.rows.value()), width, height))
+            low = self.capture_storage.currentIndex() == 0
+            if low and self.method.currentIndex() == 0:
+                count = math.ceil(max(0, duration) / self.interval.value())
+                fps = self.inspected_video[1].get("fps") if width and self.inspected_video else None
+                limit = f' · source averages {fps:g} fps' if fps else ''
+                self.frame_estimate.setText(f'{label}up to {count:,} requested time slots{limit}. Only real frames are indexed. No image files during capture.')
+            elif low:
+                count = math.ceil(max(0, duration) / self.interval.value())
+                self.frame_estimate.setText(f'{label}up to {count:,} capture attempts. Saves compact JPEGs and shares unchanged consecutive frames. Browser timing varies.')
+            else:
+                self.frame_estimate.setText(label + estimate(duration, self.interval.value(), min(self.per_sheet.value(), self.columns.value() * self.rows.value()), width, height))
         except ValueError:
             self.frame_estimate.setText('Set an end later than start to estimate capture size.')
 
@@ -659,14 +751,14 @@ class Studio(QMainWindow):
         QMessageBox.warning(self, 'Capture needs attention', message)
 
     def interval_preset(self, index):
-        if index < 6:
-            self.interval.setValue([.05, .1, .25, .5, 1, 2][index])
+        if 0 <= index < len(self.interval_options):
+            self.interval.setValue(self.interval_options[index])
 
     def interval_changed(self):
         self.update_estimate()
-        values = [.05, .1, .25, .5, 1, 2]
+        values = self.interval_options
         value = self.interval.value()
-        index = values.index(value) if value in values else 6
+        index = values.index(value) if value in values else len(values)
         self.presets.blockSignals(True)
         self.presets.setCurrentIndex(index)
         self.presets.blockSignals(False)
@@ -682,7 +774,7 @@ class Studio(QMainWindow):
 
     def mode_changed(self, index):
         if index == 1:
-            self.interval.setValue(.1)
+            self.interval.setValue(.01 if self.method.currentIndex() == 0 else .1)
             self.sheet_preset.setCurrentIndex(1)
 
     def method_changed(self, _index=0):
@@ -882,9 +974,12 @@ class Studio(QMainWindow):
             if self.mode.currentIndex() == 1 and self.session:
                 parent = str(self.session.root)
                 library = self.session.root / 'details'
+            low = self.capture_storage.currentIndex() == 0
+            storage = ("source" if index == 0 else "jpeg") if low else "png"
+            make_sheets = self.auto_sheets.isChecked()
             session = Session.create(library, ['local', 'window', 'youtube'][index], self.interval.value(),
                                      window.title if index == 1 else str(Path(source).resolve()) if index == 0 else source,
-                                     parent=parent)
+                                     parent=parent, storage=storage)
             self.pending_session = session
             logging.info('Capture started: %s (%s)', session.root, session.data['method'])
             crop = self.crop_preview.crop
@@ -901,7 +996,7 @@ class Studio(QMainWindow):
                     nonlocal last_preview
                     progress(done, total)
                     now = time.monotonic()
-                    if session.data['frames'] and now - last_preview >= .5:
+                    if storage != "source" and session.data['frames'] and now - last_preview >= .5:
                         try:
                             with Image.open(session.root / session.data['frames'][-1]['file']) as image:
                                 image.thumbnail((1000, 1000), Image.Resampling.LANCZOS)
@@ -924,8 +1019,7 @@ class Studio(QMainWindow):
                         capture_youtube(source, session, control, start, end, capture_progress)
                 except Cancelled:
                     session.finish('stopped')
-                if session.data['frames']:
-                    # Stop ends acquisition; completed frames still get sheets automatically.
+                if make_sheets and session.data['frames']:
                     generate(session, config, progress=progress)
                 return session
             self.run_job(task, self.capture_done, pausable=index in (1, 2))
@@ -981,18 +1075,43 @@ class Studio(QMainWindow):
         self.compare_hint.setText('Select a frame, pin it as A, then select another frame as B.')
         for worker in self.thumbnail_jobs:
             worker.requestInterruption()
+        self.thumb_visible.clear()
+        self.thumb_loaded.clear()
+        self.pick_anchor = None
+        picked = set(session.data.get("picked_frames", []))
+        self.gallery.blockSignals(True)
         self.gallery.clear()
         for frame in session.data['frames']:
             text = frame_label(frame)
             if frame.get('excluded_from_sheets'):
                 text += ' · excluded'
-            self.gallery.addItem(QListWidgetItem(text))
-        self.info.setText(f'{session.data["name"]}\n{len(session.data["frames"])} frames · {session.data["requested_interval_seconds"]:g} s requested\n{session.data["method"]} · {session.data["status"]}\n{session.root}')
-        worker = ThumbnailWorker(session.root, session.data['frames'], self.token)
-        self.thumbnail_jobs.append(worker)
-        worker.thumbnail.connect(self.set_thumbnail)
-        worker.finished.connect(lambda w=worker: self.thumbnail_finished(w))
-        worker.start()
+            item = QListWidgetItem(text)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Checked if frame["number"] in picked else Qt.CheckState.Unchecked)
+            item.setSizeHint(QSize(160, 52))
+            self.gallery.addItem(item)
+        self.gallery.blockSignals(False)
+        field = time_field(session)
+        self.time_index = sorted((frame[field], i) for i, frame in enumerate(session.data["frames"])
+                                 if frame.get(field) is not None)
+        self.frame_scrub.blockSignals(True)
+        self.frame_scrub.setRange(0, max(0, self.gallery.count() - 1))
+        self.frame_scrub.setValue(0)
+        self.frame_scrub.blockSignals(False)
+        self.frame_scrub.setEnabled(bool(self.gallery.count()))
+        self.seek_seconds.setEnabled(bool(self.time_index))
+        if self.time_index:
+            self.seek_seconds.setRange(self.time_index[0][0], self.time_index[-1][0])
+        self.update_pick_controls()
+        storage = session.data.get("storage", "png")
+        count = len({frame["file"] for frame in session.data["frames"] if frame["file"]})
+        medium = {
+            "source": "Video reference · no saved screenshot files",
+            "jpeg": f"{count:,} compact JPEG files",
+            "png": f"{count:,} original PNG files",
+        }.get(storage, storage)
+        self.relink_video_button.setVisible(storage == "source")
+        self.info.setText(f'{session.data["name"]}\n{len(session.data["frames"])} real frames · {session.data["requested_interval_seconds"]:g} s requested\n{medium}\n{session.root}')
         if session.data['frames']:
             self.gallery.setCurrentRow(0)
             self.tabs.setCurrentIndex(1)
@@ -1001,14 +1120,142 @@ class Studio(QMainWindow):
             self.viewer._item = None
             self.frame_label.setText('No captured frames in this session.')
 
+    def schedule_thumbnails(self, *_args):
+        self.thumb_timer.start(100)
+
+    def update_thumbnail_window(self):
+        if not self.session or self.closing or not self.gallery.count():
+            return
+        top = self.gallery.indexAt(QPoint(12, 12)).row()
+        if top < 0:
+            top = max(0, self.gallery.currentRow() - 2)
+        limit = 9 if self.session.data.get("storage") == "source" else 28
+        window = set(range(max(0, top - 1), min(self.gallery.count(), top + limit)))
+        if window != self.thumb_visible:
+            for index in self.thumb_visible - window:
+                item = self.gallery.item(index)
+                if item:
+                    item.setIcon(QIcon())
+            self.thumb_visible = window
+            self.thumb_loaded.intersection_update(window)
+            for worker in self.thumbnail_jobs:
+                worker.requestInterruption()
+        if self.thumbnail_jobs:
+            return
+        missing = sorted(window - self.thumb_loaded)
+        if not missing:
+            return
+        worker = ThumbnailWorker(self.session, missing, self.token)
+        self.thumbnail_jobs.append(worker)
+        worker.thumbnail.connect(self.set_thumbnail)
+        worker.finished.connect(lambda w=worker: self.thumbnail_finished(w))
+        worker.start()
+
     def thumbnail_finished(self, worker):
         if worker in self.thumbnail_jobs:
             self.thumbnail_jobs.remove(worker)
+        if worker.token == self.token:
+            self.thumb_loaded.update(worker.attempted & self.thumb_visible)
         worker.deleteLater()
+        self.schedule_thumbnails()
 
     def set_thumbnail(self, token, index, image):
-        if token == self.token and index < self.gallery.count():
+        if token == self.token and index in self.thumb_visible:
             self.gallery.item(index).setIcon(QIcon(QPixmap.fromImage(image)))
+
+    def jump_to_time(self):
+        if not self.time_index:
+            return
+        time = self.seek_seconds.value()
+        at = bisect.bisect_left(self.time_index, (time, -1))
+        _, row = min(self.time_index[max(0, at - 1):at + 1], key=lambda pair: abs(pair[0] - time))
+        self.gallery.setCurrentRow(row)
+
+    def update_pick_controls(self):
+        count = len(self.session.data.get("picked_frames", [])) if self.session else 0
+        self.pick_count.setText(f'{count} picked' if count else 'No frames picked')
+        self.export_picks_button.setEnabled(bool(count))
+        self.update_export_options()
+
+    def save_picks(self, picks):
+        previous = self.session.data.get("picked_frames", [])
+        if picks == set(previous):
+            return
+        self.session.data["picked_frames"] = sorted(picks)
+        try:
+            self.session.save()
+        except OSError as error:
+            self.session.data["picked_frames"] = previous
+            self.error(str(error))
+            self.sync_pick_checks()
+        self.update_pick_controls()
+
+    def pick_changed(self, item):
+        if not self.session:
+            return
+        number = self.gallery.row(item) + 1
+        if number < 1:
+            return
+        picks = set(self.session.data.get("picked_frames", []))
+        checked = item.checkState() == Qt.CheckState.Checked
+        if checked != (number in picks):
+            if checked:
+                picks.add(number)
+                self.pick_anchor = number
+            else:
+                picks.discard(number)
+            self.save_picks(picks)
+
+    def toggle_current_pick(self):
+        item = self.gallery.currentItem()
+        if item:
+            checked = item.checkState() == Qt.CheckState.Checked
+            item.setCheckState(Qt.CheckState.Unchecked if checked else Qt.CheckState.Checked)
+
+    def sync_pick_checks(self):
+        picks = set(self.session.data.get("picked_frames", []))
+        self.gallery.blockSignals(True)
+        for row in range(self.gallery.count()):
+            self.gallery.item(row).setCheckState(Qt.CheckState.Checked if row + 1 in picks else Qt.CheckState.Unchecked)
+        self.gallery.blockSignals(False)
+
+    def pick_through_current(self):
+        if not self.session or self.gallery.currentRow() < 0:
+            return
+        current = self.gallery.currentRow() + 1
+        first, last = sorted((self.pick_anchor or current, current))
+        self.save_picks(set(self.session.data.get("picked_frames", [])) | set(range(first, last + 1)))
+        self.sync_pick_checks()
+        self.pick_anchor = current
+
+    def clear_picks(self):
+        if self.session:
+            self.save_picks(set())
+            self.sync_pick_checks()
+            self.pick_anchor = None
+
+    def relink_video(self):
+        if not self.session or self.session.data.get("storage") != "source" or self.busy:
+            return
+        chosen, _ = QFileDialog.getOpenFileName(self, 'Relink the original video')
+        if not chosen:
+            return
+        try:
+            path = Path(chosen).resolve()
+            if video_signature(path) != self.session.data.get("source_signature"):
+                raise ValueError("This file does not match the indexed original video. Reindex it if the video changed.")
+            previous = self.session.data["source"]
+            self.session.data["source"] = str(path)
+            try:
+                self.session.save()
+            except OSError:
+                self.session.data["source"] = previous
+                raise
+            row = self.gallery.currentRow()
+            self.show_session(self.session)
+            self.gallery.setCurrentRow(row)
+        except (OSError, ValueError) as error:
+            self.error(str(error))
 
     def load_images(self, task, callback):
         if self.closing:
@@ -1038,19 +1285,36 @@ class Studio(QMainWindow):
             return
         self.preview_token += 1
         token = self.preview_token
-        frame = self.session.data['frames'][index]
-        self.frame_label.setText(f'{frame_label(frame)}   ·   {frame["width"]} × {frame["height"]} original pixels')
-        path = contained(self.session.root, frame['file'])
-        if not path.is_file():
+        session = self.session
+        frame = session.data['frames'][index]
+        self.frame_scrub.blockSignals(True)
+        self.frame_scrub.setValue(index)
+        self.frame_scrub.blockSignals(False)
+        stamp = frame.get(time_field(session))
+        if stamp is not None:
+            self.seek_seconds.setValue(stamp)
+        self.schedule_thumbnails()
+        base = f'{frame_label(frame)}   ·   {frame["width"]} × {frame["height"]}'
+        self.frame_label.setText(base)
+        if frame['file'] is not None and not contained(session.root, frame['file']).is_file():
             self.viewer.scene().clear()
             self.viewer._item = None
-            self.frame_label.setText(f'{frame_label(frame)} · Source frame file is missing')
+            self.frame_label.setText(base + ' · Source frame file is missing')
             return
-        def task(_control, _progress):
-            with Image.open(path) as image:
-                return token, qimage(image)
+        def task(control, _progress):
+            try:
+                with session.open_frame(frame, control) as image:
+                    return token, qimage(image), None
+            except (OSError, ValueError, RuntimeError) as error:
+                return token, None, str(error)
         def ready(result):
-            if result[0] == self.preview_token:
+            if result[0] != self.preview_token:
+                return
+            if result[2]:
+                self.viewer.scene().clear()
+                self.viewer._item = None
+                self.frame_label.setText(base + ' · ' + result[2])
+            else:
                 self.viewer.set_image(result[1])
         self.load_images(task, ready)
         if self.pinned is not None:
@@ -1071,19 +1335,32 @@ class Studio(QMainWindow):
             return
         session = self.session
         left, right = session.data['frames'][self.pinned], session.data['frames'][self.gallery.currentRow()]
-        a, b = contained(session.root, left['file']), contained(session.root, right['file'])
         self.comparison_token += 1
         token = self.comparison_token
         use_diff = self.diff.isChecked()
         self.compare_hint.setText(f'A: {frame_label(left)}   /   B: {frame_label(right)}' + (' · absolute RGB difference, contrast ×2' if use_diff else ''))
-        def task(_control, _progress):
-            with Image.open(a) as image:
-                first = qimage(image)
-            with difference(a, b) if use_diff else Image.open(b) as image:
-                second = qimage(image)
-            return token, first, second
+        hint = self.compare_hint.text()
+        def task(control, _progress):
+            try:
+                with session.open_frame(left, control) as a, session.open_frame(right, control) as b:
+                    first = qimage(a)
+                    if use_diff:
+                        with difference_images(a, b) as delta:
+                            second = qimage(delta)
+                    else:
+                        second = qimage(b)
+                return token, first, second, None
+            except (OSError, ValueError, RuntimeError) as error:
+                return token, None, None, str(error)
         def ready(result):
-            if result[0] == self.comparison_token:
+            if result[0] != self.comparison_token:
+                return
+            if result[3]:
+                self.compare_hint.setText(hint + ' · ' + result[3])
+                for view in (self.compare_left, self.compare_right):
+                    view.scene().clear()
+                    view._item = None
+            else:
                 self.compare_left.set_image(result[1])
                 self.compare_right.set_image(result[2])
         self.load_images(task, ready)
@@ -1094,7 +1371,8 @@ class Studio(QMainWindow):
             return
         try:
             session, config = self.session, self.sheet_config()
-            self.run_job(lambda control, progress: generate(session, config, progress, control),
+            self.run_job(lambda control, progress: generate(session, config, progress, control,
+                                                                      picked_only=bool(session.data.get("picked_frames"))),
                          lambda result: self.status_label.setText(f'Generated {len(result)} contact sheets') if result else None)
         except Exception as exc:
             self.error(str(exc))
@@ -1104,7 +1382,7 @@ class Studio(QMainWindow):
             self.error('Open or capture a session first.')
             return
         session, include = self.session, self.include_frames.isChecked()
-        self.run_job(lambda _control, _progress: export_chatgpt(session, include_frames=include),
+        self.run_job(lambda control, _progress: export_chatgpt(session, include_frames=include, control=control),
                      self.export_done)
 
     def review_duplicates(self):
@@ -1219,10 +1497,14 @@ class Studio(QMainWindow):
             self.refresh_library()
             self.status_label.setText('The capture folder was removed. The frame list has been cleared.')
             return
-        remaining = [frame for frame in session.data['frames'] if contained(session.root, frame['file']).is_file()]
+        remaining = [frame for frame in session.data['frames']
+                     if frame['file'] is None or contained(session.root, frame['file']).is_file()]
         removed = len(session.data['frames']) - len(remaining)
         if removed:
             session.data['frames'] = remaining
+            picked = set(session.data.get("picked_frames", []))
+            session.data["picked_frames"] = [number for number, frame in enumerate(remaining, 1)
+                                              if frame["number"] in picked]
             for number, frame in enumerate(remaining, 1):
                 frame['number'] = number
             try:
@@ -1237,6 +1519,11 @@ class Studio(QMainWindow):
         for worker in self.thumbnail_jobs:
             worker.requestInterruption()
         self.session = None
+        self.update_pick_controls()
+        self.relink_video_button.hide()
+        self.frame_scrub.setEnabled(False)
+        self.seek_seconds.setEnabled(False)
+        self.time_index = []
         self.reset_compact_export()
         self.token += 1
         self.preview_token += 1
@@ -1305,6 +1592,7 @@ class Studio(QMainWindow):
                 'spacing': self.spacing, 'font_size': self.font_size, 'frame_width': self.frame_width,
                 'background': self.background, 'method': self.method, 'sheet_preset': self.sheet_preset,
                 'image_format': self.image_format, 'include_frames': self.include_frames,
+                'capture_storage': self.capture_storage, 'auto_sheets': self.auto_sheets,
                 'export_format': self.export_format, 'export_budget': self.export_budget,
                 'export_quality': self.export_quality, 'export_dimension': self.export_dimension,
                 'export_per_sheet': self.export_per_sheet, 'export_zip_batches': self.export_zip_batches}

@@ -3,15 +3,20 @@ from __future__ import annotations
 import hashlib
 from PIL import Image, ImageChops, ImageEnhance
 
-from .session import contained
 
 
 def difference(left, right):
     """Absolute RGB pixel difference. Different-size frames are not resampled."""
     with Image.open(left) as a, Image.open(right) as b:
-        if a.size != b.size:
-            raise ValueError("Pixel difference requires equal image dimensions.")
-        return ImageEnhance.Contrast(ImageChops.difference(a.convert('RGB'), b.convert('RGB'))).enhance(2)
+        return difference_images(a, b)
+
+
+def difference_images(a, b):
+    if a.size != b.size:
+        raise ValueError("Pixel difference requires equal image dimensions.")
+    with a.convert('RGB') as left, b.convert('RGB') as right:
+        with ImageChops.difference(left, right) as delta:
+            return ImageEnhance.Contrast(delta).enhance(2)
 
 
 def find_duplicates(session, control=None):
@@ -20,7 +25,7 @@ def find_duplicates(session, control=None):
     for f in session.data['frames']:
         if control:
             control.checkpoint()
-        with Image.open(contained(session.root, f['file'])) as image:
+        with session.open_frame(f, control) as image:
             hasher = hashlib.sha256(str(image.size).encode())
             # Bound temporary RGB buffers rather than copying/concatenating a
             # full-resolution pixel array. Conversion remains pixel-exact.

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import os
 import tempfile
 import zipfile
@@ -25,7 +26,7 @@ Use metadata.json and timestamp_index.csv to distinguish actual media presentati
 """
 
 
-def export_chatgpt(session: Session, destination: Path | None = None, include_frames=False):
+def export_chatgpt(session: Session, destination: Path | None = None, include_frames=False, control=None):
     if not session.data["contact_sheets"]:
         raise ValueError("Generate contact sheets before exporting.")
     destination = destination or session.root / "contact_sheets.zip"
@@ -33,13 +34,20 @@ def export_chatgpt(session: Session, destination: Path | None = None, include_fr
     if destination.suffix.lower() != '.zip':
         raise ValueError('Choose a .zip export destination.')
     protected = [session.root / "metadata.json"] + [contained(session.root, p) for p in session.data["contact_sheets"]]
-    protected += [contained(session.root, f["file"]) for f in session.data["frames"]]
+    protected += [contained(session.root, f["file"]) for f in session.data["frames"] if f["file"] is not None]
+    indexed = session.data.get("storage") == "source"
+    if indexed:
+        protected.append(Path(session.data["source"]).resolve())
+    frames = [
+        {**f, "file": f"frames/frame_{f['number']:06d}.png"} if include_frames and f['file'] is None else f
+        for f in session.data["frames"]
+    ]
     if destination in protected:
         raise ValueError("Export destination would overwrite a session source file.")
     index = io.StringIO(newline="")
     writer = csv.writer(index)
     writer.writerow(["frame", "file", "video_timestamp_seconds", "elapsed_capture_seconds", "requested_timestamp_seconds", "captured_at"])
-    for f in session.data["frames"]:
+    for f in frames:
         writer.writerow([f["number"], f["file"], f.get("video_timestamp_seconds"),
                          f.get("elapsed_capture_seconds"), f.get("requested_timestamp_seconds"), f.get("captured_at")])
     session.save()
@@ -47,7 +55,10 @@ def export_chatgpt(session: Session, destination: Path | None = None, include_fr
     os.close(fd)
     try:
         with zipfile.ZipFile(temp, "w", zipfile.ZIP_DEFLATED) as archive:
-            archive.write(session.root / "metadata.json", "metadata.json")
+            if indexed and include_frames:
+                archive.writestr("metadata.json", json.dumps({**session.data, "frames": frames, "storage": "png"}, indent=2))
+            else:
+                archive.write(session.root / "metadata.json", "metadata.json")
             archive.writestr("timestamp_index.csv", index.getvalue())
             archive.writestr("analysis_instructions.txt", ANALYSIS_INSTRUCTIONS)
             # PNG/JPEG payloads are already compressed; retain their exact bytes
@@ -55,9 +66,20 @@ def export_chatgpt(session: Session, destination: Path | None = None, include_fr
             for relative in session.data["contact_sheets"]:
                 archive.write(contained(session.root, relative), relative, compress_type=zipfile.ZIP_STORED)
             if include_frames:
-                for frame in session.data["frames"]:
-                    archive.write(contained(session.root, frame["file"]), frame["file"],
-                                  compress_type=zipfile.ZIP_STORED)
+                written = set()
+                for original, frame in zip(session.data["frames"], frames):
+                    if control:
+                        control.checkpoint()
+                    relative = frame["file"]
+                    if relative in written:
+                        continue
+                    if original["file"] is None:
+                        with session.open_frame(original, control) as image, io.BytesIO() as buffer:
+                            image.save(buffer, format="PNG")
+                            archive.writestr(relative, buffer.getvalue(), compress_type=zipfile.ZIP_STORED)
+                    else:
+                        archive.write(contained(session.root, relative), relative, compress_type=zipfile.ZIP_STORED)
+                    written.add(relative)
         os.replace(temp, destination)
     finally:
         Path(temp).unlink(missing_ok=True)

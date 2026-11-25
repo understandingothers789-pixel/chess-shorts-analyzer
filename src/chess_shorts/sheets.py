@@ -9,7 +9,7 @@ from pathlib import Path
 
 from PIL import Image, ImageColor, ImageDraw, ImageFont
 
-from .session import Session, contained
+from .session import Session
 
 
 def timestamp(seconds):
@@ -62,10 +62,12 @@ def font(size):
     return ImageFont.load_default(size=size)
 
 
-def generate(session: Session, config: SheetConfig | None = None, progress=None, control=None):
+def generate(session: Session, config: SheetConfig | None = None, progress=None, control=None, *, picked_only=False):
     config = config or SheetConfig()
     config.validate()
-    frames = [f for f in session.data["frames"] if not f.get('excluded_from_sheets')]
+    picked = set(session.data.get("picked_frames", []))
+    frames = [f for f in session.data["frames"]
+              if not f.get('excluded_from_sheets') and (not picked_only or f["number"] in picked)]
     if not frames:
         raise ValueError("Capture frames before generating contact sheets.")
     # Geometry only; never retain the full image collection in memory.
@@ -105,8 +107,7 @@ def generate(session: Session, config: SheetConfig | None = None, progress=None,
                 draw = ImageDraw.Draw(canvas)
                 for at, f in enumerate(batch):
                     x, y = gap + (at % columns) * (cell_w + gap), gap + (at // columns) * (cell_h + gap)
-                    with Image.open(contained(session.root, f["file"])) as im:
-                        im = im.convert("RGB")
+                    with session.open_frame(f, control) as source, source.convert("RGB") as im:
                         im.thumbnail((widths[offset + at], heights[offset + at]), Image.Resampling.LANCZOS)
                         canvas.paste(im, (x + (cell_w - im.width) // 2, y + (image_h - im.height) // 2))
                     draw.text((x + 4, y + image_h + 6), frame_label(f), font=text_font, fill="#dce5f4")
